@@ -1385,10 +1385,170 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_windows_pi_session_identity() {
+  local fakebin no_powershell state out extension powershell_log
+  fakebin="$TMP_ROOT/windows-pi-identity/bin"
+  no_powershell="$TMP_ROOT/windows-pi-identity/no-powershell"
+  state="$TMP_ROOT/windows-pi-identity/state"
+  mkdir -p "$fakebin" "$no_powershell" "$state"
+  cat > "$fakebin/uname" <<'SH'
+#!/usr/bin/env bash
+printf 'MSYS_NT-10.0\n'
+SH
+  cat > "$no_powershell/uname" <<'SH'
+#!/usr/bin/env bash
+printf 'MSYS_NT-10.0\n'
+SH
+  cat > "$fakebin/powershell.exe" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FM_FAKE_POWERSHELL_LOG:-}" ]; then
+  {
+    printf 'args: %s\n' "$*"
+    cat
+  } > "$FM_FAKE_POWERSHELL_LOG"
+else
+  cat >/dev/null
+fi
+case "${FM_FAKE_POWERSHELL:-good}" in
+  good) printf 'pid:%s' "$FM_PI_PROCESS_PID" ;;
+  wrong) printf 'pid:999999' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/uname" "$no_powershell/uname" "$fakebin/powershell.exe"
+  extension=$(cat "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts")
+  assert_contains "$extension" 'ctx.sessionManager.getSessionId()' \
+    "Pi session_start does not bind the current Pi session id"
+  assert_contains "$extension" 'process.env.FM_PI_PROCESS_PID = String(process.pid)' \
+    "Pi session_start does not bind its native process pid"
+
+  powershell_log="$fakebin/powershell.log"
+  out=$(PATH="$fakebin:$BASE_PATH" PI_CODING_AGENT=true PI_SESSION_ID=session-a \
+    FM_PI_SESSION_ID=session-a FM_PI_PROCESS_PID=4242 FM_FAKE_POWERSHELL_LOG="$powershell_log" \
+    bash -c '. "$1"; fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh")
+  [ "$out" = 4242 ] || fail "Windows Pi identity did not return the bound native pid: $out"
+  assert_contains "$(cat "$powershell_log")" '-Command -' \
+    "Windows Pi identity did not pass the PowerShell program through stdin"
+  assert_contains "$(cat "$powershell_log")" 'ProcessId = $targetPid' \
+    "Windows Pi identity did not query the bound native process id"
+  assert_not_contains "$(cat "$powershell_log")" '$pid =' \
+    "Windows Pi identity assigned PowerShell's read-only PID variable"
+  assert_contains "$(cat "$powershell_log")" 'Get-CimInstance Win32_Process' \
+    "Windows Pi identity did not use the required noninteractive CIM process query"
+  assert_contains "$(cat "$powershell_log")" '(^|[\s\\/\"])@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]cli\.js([\s\"]|$)' \
+    "Windows Pi identity did not require the Pi Node command-line shape"
+  PATH="$fakebin:$BASE_PATH" PI_CODING_AGENT=true PI_SESSION_ID=session-b \
+    FM_PI_SESSION_ID=session-a FM_PI_PROCESS_PID=4242 \
+    bash -c '. "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Pi identity accepted a mismatched session id"
+  PATH="$fakebin:$BASE_PATH" PI_CODING_AGENT=true PI_SESSION_ID=session-a \
+    FM_PI_SESSION_ID=session-a FM_PI_PROCESS_PID=4242 FM_FAKE_POWERSHELL=wrong \
+    bash -c '. "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Pi identity accepted a stale or wrong native process"
+  PATH="$no_powershell:$BASE_PATH" PI_CODING_AGENT=true PI_SESSION_ID=session-a \
+    FM_PI_SESSION_ID=session-a FM_PI_PROCESS_PID=4242 \
+    bash -c '. "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Pi identity accepted a pid without PowerShell validation"
+  PATH="$fakebin:$BASE_PATH" PI_CODING_AGENT=true PI_SESSION_ID=session-a \
+    FM_PI_SESSION_ID=session-a FM_PI_PROCESS_PID=4242 \
+    bash -c 'uname() { printf "Linux\\n"; }; . "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Unix generic ancestry accepted Windows Pi environment values"
+
+  printf '5252\n' > "$state/.lock"
+  make_fake_ps_harness "$fakebin" claude
+  env -u PI_CODING_AGENT -u PI_SESSION_ID -u FM_PI_SESSION_ID -u FM_PI_PROCESS_PID \
+    CLAUDECODE=1 PATH="$fakebin:$BASE_PATH" \
+    bash -c '. "$1"; fm_harness_pid_alive 5252 && ! fm_session_lock_owned_by_self "$2"' _ \
+    "$ROOT/bin/fm-session-lock-lib.sh" "$state" \
+    || fail "a Claude caller did not preserve a live other Pi lock"
+  env -u PI_CODING_AGENT -u PI_SESSION_ID -u FM_PI_SESSION_ID -u FM_PI_PROCESS_PID -u CLAUDECODE \
+    PATH="$fakebin:$BASE_PATH" \
+    bash -c '. "$1"; fm_harness_pid_alive 5252 && ! fm_session_lock_owned_by_self "$2"' _ \
+    "$ROOT/bin/fm-session-lock-lib.sh" "$state" \
+    || fail "a markerless caller did not preserve a live other Pi lock"
+  env -u PI_CODING_AGENT -u PI_SESSION_ID -u FM_PI_SESSION_ID -u FM_PI_PROCESS_PID -u CLAUDECODE \
+    FM_FAKE_POWERSHELL=wrong PATH="$fakebin:$BASE_PATH" \
+    bash -c '. "$1"; ! fm_harness_pid_alive 5252' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "a malformed or non-Pi target passed native Windows liveness"
+  pass "Windows Pi session identity preserves live-other Pi locks for Claude and markerless callers"
+}
+
+test_windows_claude_session_identity() {
+  local fakebin no_powershell out powershell_log
+  fakebin="$TMP_ROOT/windows-claude-identity/bin"
+  no_powershell="$TMP_ROOT/windows-claude-identity/no-powershell"
+  mkdir -p "$fakebin" "$no_powershell"
+  cat > "$fakebin/uname" <<'SH'
+#!/usr/bin/env bash
+printf 'MSYS_NT-10.0\n'
+SH
+  cat > "$no_powershell/uname" <<'SH'
+#!/usr/bin/env bash
+printf 'MSYS_NT-10.0\n'
+SH
+  cat > "$fakebin/powershell.exe" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FM_FAKE_POWERSHELL_LOG:-}" ]; then
+  {
+    printf 'args: %s\n' "$*"
+    cat
+  } > "$FM_FAKE_POWERSHELL_LOG"
+else
+  cat >/dev/null
+fi
+case "${FM_FAKE_POWERSHELL:-good}" in
+  good) printf 'pid:%s' "$FM_CLAUDE_PROCESS_PID" ;;
+  wrong) printf 'pid:999999' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/uname" "$no_powershell/uname" "$fakebin/powershell.exe"
+
+  powershell_log="$fakebin/powershell.log"
+  out=$(PATH="$fakebin:$BASE_PATH" CLAUDECODE=1 CLAUDE_PID=4242 \
+    FM_CLAUDE_PROCESS_PID=4242 FM_FAKE_POWERSHELL_LOG="$powershell_log" \
+    bash -c '. "$1"; fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh")
+  [ "$out" = 4242 ] || fail "Windows Claude identity did not return the bound native pid: $out"
+  assert_contains "$(cat "$powershell_log")" '-Command -' \
+    "Windows Claude identity did not pass the PowerShell program through stdin"
+  assert_contains "$(cat "$powershell_log")" 'ProcessId = $targetPid' \
+    "Windows Claude identity did not query the bound native process id"
+  assert_not_contains "$(cat "$powershell_log")" '$pid =' \
+    "Windows Claude identity assigned PowerShell's read-only PID variable"
+  assert_contains "$(cat "$powershell_log")" 'Get-CimInstance Win32_Process' \
+    "Windows Claude identity did not use the required noninteractive CIM process query"
+  assert_contains "$(cat "$powershell_log")" "Name -ieq 'claude.exe'" \
+    "Windows Claude identity did not require the claude.exe process name"
+
+  env -u CLAUDECODE PATH="$fakebin:$BASE_PATH" CLAUDE_PID=4242 \
+    bash -c '. "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Claude identity accepted a caller without CLAUDECODE set"
+  PATH="$fakebin:$BASE_PATH" CLAUDECODE=1 CLAUDE_PID=4242 FM_FAKE_POWERSHELL=wrong \
+    bash -c '. "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Claude identity accepted a stale or wrong native process"
+  PATH="$no_powershell:$BASE_PATH" CLAUDECODE=1 CLAUDE_PID=4242 \
+    bash -c '. "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Claude identity accepted a pid without PowerShell validation"
+  PATH="$fakebin:$BASE_PATH" CLAUDECODE=1 CLAUDE_PID=4242 \
+    bash -c 'uname() { printf "Linux\\n"; }; . "$1"; ! fm_harness_ancestry_pid' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Unix generic ancestry accepted Windows Claude environment values"
+
+  PATH="$fakebin:$BASE_PATH" CLAUDECODE=1 \
+    bash -c '. "$1"; fm_harness_pid_alive 4242' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Claude liveness rejected a live native process by pid alone"
+  PATH="$fakebin:$BASE_PATH" CLAUDECODE=1 FM_FAKE_POWERSHELL=wrong \
+    bash -c '. "$1"; ! fm_harness_pid_alive 4242' _ "$ROOT/bin/fm-session-lock-lib.sh" \
+    || fail "Windows Claude liveness accepted a malformed or non-Claude target"
+
+  pass "Windows Claude session identity resolves the native host pid and its liveness"
+}
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_session_lock_concurrent_single_winner
+test_windows_pi_session_identity
+test_windows_claude_session_identity
 test_output_ordering_diagnostics_lead
 test_herdr_backend_diagnostics_follow_real_session_start
 test_session_start_relaunches_missing_pi_secondmate

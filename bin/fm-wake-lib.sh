@@ -9,6 +9,10 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
+# A stuck claim (e.g. an ownership check that can never resolve on a platform
+# where directory "symlinks" aren't detectable as such) must surface as a
+# clear failure, not a silent indefinite hang.
+FM_LOCK_ACQUIRE_TIMEOUT="${FM_LOCK_ACQUIRE_TIMEOUT:-30}"
 mkdir -p "$STATE"
 
 fm_current_pid() {
@@ -342,8 +346,13 @@ fm_lock_try_acquire() {
 }
 
 fm_lock_acquire_wait() {
-  local lockdir=$1
+  local lockdir=$1 deadline
+  deadline=$(( $(date +%s) + FM_LOCK_ACQUIRE_TIMEOUT ))
   while ! fm_lock_try_acquire "$lockdir"; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "error: timed out after ${FM_LOCK_ACQUIRE_TIMEOUT}s waiting for lock $lockdir" >&2
+      return 1
+    fi
     sleep 0.1
   done
 }
@@ -384,7 +393,7 @@ fm_wake_append() {
   seq_file="$STATE/.wake-queue.seq"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   seq=$(cat "$seq_file" 2>/dev/null || echo 0)
   case "$seq" in
     ''|*[!0-9]*) seq=0 ;;
