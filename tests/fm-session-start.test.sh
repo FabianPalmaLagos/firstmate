@@ -362,6 +362,19 @@ case "${1:-} ${2:-}" in
       exit 1
     fi
     ;;
+  "pane process-info")
+    pane=${4:-}
+    if [ "$pane" = p-new ] && [ -e "$spawned" ]; then
+      cwd=$(cd "$FM_FAKE_SECOND_MATE_HOME" && pwd -P)
+      if [ -e "${state}.launched" ]; then
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"node","cmdline":"node /opt/pi --thinking xhigh","cwd":"%s"}]}}}\n' "$cwd"
+      else
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":10,"name":"zsh","cmdline":"-zsh","cwd":"%s"}]}}}\n' "$cwd"
+      fi
+    else
+      exit 1
+    fi
+    ;;
   "agent get")
     if [ "${3:-}" = p-new ] && [ -e "$spawned" ]; then
       printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}'
@@ -373,7 +386,26 @@ case "${1:-} ${2:-}" in
   "pane close")
     [ "${3:-}" = p-old ] && : > "$killed"
     ;;
-  "pane run"|"pane send-text"|"pane send-keys"|"tab close")
+  "pane run")
+    line=${4:-}
+    case "$line" in
+      *"__fm_ready_"*)
+        token=$(printf '%s' "$line" | grep -Eo '__fm_ready_[A-Za-z0-9_]+__' | head -1)
+        cwd=$(cd "$FM_FAKE_SECOND_MATE_HOME" && pwd -P)
+        checksum=$(printf '%s\n' "$cwd" | cksum | awk '{print $1}')
+        printf '%s\n%s\n' "$token" "$checksum" >> "${state}.output"
+        ;;
+      *"__fm_launch_"*)
+        token=$(printf '%s' "$line" | grep -Eo '__fm_launch_[A-Za-z0-9_]+__' | head -1)
+        printf '%s\n' "$token" >> "${state}.output"
+        : > "${state}.launched"
+        ;;
+    esac
+    ;;
+  "pane read")
+    cat "${state}.output" 2>/dev/null || true
+    ;;
+  "pane send-text"|"pane send-keys"|"tab close")
     ;;
   *)
     exit 1
@@ -505,6 +537,7 @@ EOF
 run_session_start_herdr_secondmate() {
   local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 state=$6
   FM_BACKEND=herdr FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    FM_FAKE_SECOND_MATE_HOME="$mate" \
     FM_FAKE_SECOND_MATE_ID="$SESSION_START_HERDR_SECOND_MATE_ID" \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH"
 }
