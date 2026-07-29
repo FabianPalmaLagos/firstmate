@@ -210,6 +210,8 @@ ok - fm-spawn Herdr abort: preserved recovery metadata is directly consumable by
 ok - fm_backend_herdr_create_task: malformed tab entries preserve recovery ownership instead of proving absence
 ok - fm-spawn Herdr abort: Kimi token state and private authorization are retired together
 ok - fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence
+ok - fm-spawn: projected presentation lock spans witnessed worker handoff
+ok - fm-spawn: presentation lock preserves concurrent focus order through handoff
 ```
 
 ### Per-home and presentation topology
