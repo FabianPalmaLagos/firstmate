@@ -401,6 +401,13 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     fm_afk_launch_close_terminal herdr "$session:$pane"
     return 1
   fi
+  if ! fm_backend_herdr_wait_shell_ready "$session:$pane" "$FM_HOME" afk; then
+    fm_afk_launch_log "herdr daemon shell was not execution-ready; closing $session:$pane"
+    FM_AFK_REC_BACKEND=herdr
+    FM_AFK_REC_TARGET="$session:$pane"
+    fm_afk_launch_close_recorded || true
+    return 1
+  fi
   if ! fm_backend_herdr_cli "$session" pane run "$pane" "$cmd" >/dev/null 2>&1; then
     fm_afk_launch_log "failed to run daemon in herdr pane $session:$pane; closing it"
     FM_AFK_REC_BACKEND=herdr

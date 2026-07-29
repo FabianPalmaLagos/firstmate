@@ -604,6 +604,22 @@ test_create_task_preserves_tab_id_when_partial_cleanup_is_unverified() {
   pass "fm_backend_herdr_create_task: unverified partial cleanup retains the exact tab recovery id"
 }
 
+test_create_task_treats_malformed_tab_entries_as_unverified_cleanup() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/create-task-tab-malformed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":["unexpected"]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-tab-only /tmp/proj; status=$?; printf "\nrecovery=%s %s\n" "$FM_BACKEND_HERDR_CREATE_TAB_ID" "$FM_BACKEND_HERDR_CREATE_PANE_ID"; exit "$status"' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task treated malformed tab entries as positive cleanup proof"
+  assert_contains "$out" "could not parse cleanup verification" "malformed tab entries did not produce an unverified-cleanup error"
+  assert_contains "$out" "recovery=w1:t2 " "malformed tab entries cleared the exact recovery id"
+  pass "fm_backend_herdr_create_task: malformed tab entries preserve recovery ownership instead of proving absence"
+}
+
 # --- container_ensure / create_task: --no-focus and per-home label ----------
 
 test_container_ensure_creates_with_no_focus_flag() {
@@ -1625,6 +1641,18 @@ test_list_live_scoped_to_this_homes_workspace_only() {
 }
 
 # --- target parsing, key normalization ---------------------------------------
+
+test_handoff_process_matches_kimi_linux_argv() {
+  local json
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":67,"name":"python3","argv0":"python3","argv":["python3","/opt/kimi/bin/kimi","--auto"]}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches kimi "$1"' _ "$json" \
+    || fail "Kimi handoff did not recognize a Linux argv/argv0 process shape"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":67,"name":"python3","argv":[67]}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches kimi "$1"' _ "$json"; then
+    fail "Kimi handoff accepted malformed non-string argv evidence"
+  fi
+  pass "fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence"
+}
 
 test_parse_target() {
   ( . "$ROOT/bin/backends/herdr.sh"
@@ -3038,6 +3066,7 @@ test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
 test_create_task_closes_and_verifies_tab_when_pane_id_is_missing
 test_create_task_preserves_tab_id_when_partial_cleanup_is_unverified
+test_create_task_treats_malformed_tab_entries_as_unverified_cleanup
 test_create_task_creates_with_no_focus_flag
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
@@ -3072,6 +3101,7 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
+test_handoff_process_matches_kimi_linux_argv
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read

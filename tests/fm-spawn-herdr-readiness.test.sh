@@ -115,7 +115,10 @@ case "$cmd $sub" in
         limit=${FM_FAKE_READY_ACK_LIMIT:-2}
         if [ "$count" -le "$limit" ]; then
           token=$(printf '%s' "$line" | grep -Eo '__fm_ready_[A-Za-z0-9_]+__' | head -1)
-          [ -z "$token" ] || printf '%s\n' "$token" >> "$state/output"
+          ready_cwd=$(cat "$state/cwd")
+          ready_cwd=$(cd "$ready_cwd" 2>/dev/null && pwd -P || printf '%s' "$ready_cwd")
+          ready_cksum=$(printf '%s\n' "$ready_cwd" | cksum | awk '{print $1}')
+          [ -z "$token" ] || printf '%s\n%s\n' "$token" "$ready_cksum" >> "$state/output"
         fi
         ;;
       "treehouse get")
@@ -124,6 +127,7 @@ case "$cmd $sub" in
       *"__fm_launch_"*)
         token=$(printf '%s' "$line" | grep -Eo '__fm_launch_[A-Za-z0-9_]+__' | head -1)
         [ -z "$token" ] || printf '%s\n' "$token" >> "$state/output"
+        : > "$FM_FAKE_WORKER_SENTINEL"
         [ "${FM_FAKE_HANDOFF_MODE:-raw}" = none ] || printf '1\n' > "$state/launched"
         ;;
     esac
@@ -172,7 +176,13 @@ case "$cmd $sub" in
     pane=${3:-}
     case "$pane" in
       w1:p1) printf '0\n' > "$state/seeded" ;;
-      w1:p2) printf '0\n' > "$state/task" ;;
+      w1:p2)
+        if [ "$(cat "$state/cwd")" = "$FM_FAKE_WORKTREE" ]; then
+          rm -f "$FM_FAKE_WORKER_SENTINEL"
+          touch "$FM_FAKE_TREEHOUSE_RETURNED"
+        fi
+        printf '0\n' > "$state/task"
+        ;;
     esac
     exit 0
     ;;
@@ -191,6 +201,7 @@ printf '%s\n' "$*" >> "${FM_FAKE_TREEHOUSE_LOG:?}"
 if [ "${FM_FAKE_TREEHOUSE_RETURN_FAIL:-0}" = 1 ]; then
   exit 1
 fi
+case " $* " in *' return '*) rm -f "${FM_FAKE_WORKER_SENTINEL:?}" ;; esac
 touch "${FM_FAKE_TREEHOUSE_RETURNED:?}"
 exit 0
 SH
@@ -220,6 +231,7 @@ make_fixture() {  # <name>
   export FM_FAKE_PROJECT="$PROJECT" FM_FAKE_WORKTREE="$WORKTREE" FM_FAKE_ID="$ID"
   export FM_FAKE_HERDR_STATE="$FIXTURE/herdr-state" FM_FAKE_HERDR_LOG="$FIXTURE/herdr.log"
   export FM_FAKE_TREEHOUSE_LOG="$FIXTURE/treehouse.log" FM_FAKE_TREEHOUSE_RETURNED="$FIXTURE/treehouse-returned"
+  export FM_FAKE_WORKER_SENTINEL="$WORKTREE/worker-uncommitted.txt"
   FAKEBIN=$(make_fakebin "$FIXTURE")
 }
 
@@ -230,6 +242,11 @@ make_unrelated_checkout() {
   printf 'unrelated\n' > "$UNRELATED/file.txt"
   git -C "$UNRELATED" add file.txt
   git -C "$UNRELATED" commit -qm unrelated
+}
+
+make_sibling_worktree() {
+  SIBLING="$FIXTURE/sibling"
+  git -C "$PROJECT" worktree add -q --detach "$SIBLING"
 }
 
 run_spawn() {  # <raw-launch-or-harness>
@@ -265,7 +282,18 @@ test_success_uses_two_readiness_acks_and_one_launch_line() {
   assert_contains "$out" "spawned $ID" "successful Herdr spawn did not report success"
   [ "$(cat "$FIXTURE/herdr-state/pane-get-count")" -ge 2 ] \
     || fail "Herdr spawn accepted a transient non-worktree cwd before the real isolated root"
+  rm -rf "/tmp/fm-$ID"
   pass "fm-spawn Herdr: transient cwd is ignored and exact readiness acknowledgement runs at both shell boundaries before one witnessed launch line"
+}
+
+test_readiness_uses_the_pane_shell_not_the_callers_shell() {
+  local out
+  make_fixture readiness-shell-mismatch
+  out=$(SHELL=/bin/bash FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=raw run_spawn "sh -c 'echo ok'") \
+    || fail "Herdr readiness rejected a ready zsh pane because the caller used bash: $out"
+  assert_contains "$out" "spawned $ID" "caller/pane shell mismatch did not complete the spawn"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr readiness: execution acknowledgement follows the pane process, not caller SHELL"
 }
 
 test_first_readiness_failure_closes_only_task_pane() {
@@ -294,18 +322,23 @@ test_second_readiness_failure_returns_worktree_and_closes_pane() {
   pass "fm-spawn Herdr abort: second-shell readiness failure returns the worktree, closes the pane, and removes temporary state"
 }
 
-test_launch_handoff_failure_cleans_published_artifacts() {
+test_launch_handoff_failure_preserves_possible_worker_work() {
   local out
   make_fixture readiness-handoff-fail
   if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=none run_spawn pi 2>&1); then
     fail "Herdr spawn accepted a witnessed launch with no Pi process or agent"
   fi
   assert_contains "$out" "no pi process or agent handoff appeared" "launch handoff failure was not reported"
-  [ -e "$FIXTURE/treehouse-returned" ] || fail "launch handoff failure did not return its acquired worktree"
-  [ "$(cat "$FIXTURE/herdr-state/task")" = 0 ] || fail "launch handoff failure left the task pane open"
-  [ ! -f "$STATE/$ID.meta" ] || fail "launch handoff failure left published metadata after successful abort cleanup"
-  [ ! -e "/tmp/fm-$ID" ] || fail "launch handoff failure left its task temp root"
-  pass "fm-spawn Herdr abort: missing verified worker handoff removes metadata/temp state and returns every owned resource"
+  [ -e "$WORKTREE/worker-uncommitted.txt" ] || fail "handoff fixture did not model uncommitted worker output"
+  [ ! -e "$FIXTURE/treehouse-returned" ] || fail "uncertain handoff destructively returned a worker-owned worktree"
+  assert_not_contains "$(cat "$FIXTURE/treehouse.log")" "return --force" \
+    "uncertain handoff invoked destructive Treehouse cleanup"
+  [ "$(cat "$FIXTURE/herdr-state/task")" = 1 ] || fail "uncertain handoff closed a possibly working pane"
+  [ -f "$STATE/$ID.meta" ] || fail "uncertain handoff discarded supervised recovery metadata"
+  assert_contains "$(cat "$STATE/$ID.meta")" "endpoint_task_id=$ID" \
+    "uncertain handoff metadata lost its exact endpoint binding"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr handoff: uncertain post-submission ownership preserves worker work and recovery metadata"
 }
 
 test_agent_identity_must_match_requested_harness() {
@@ -315,9 +348,10 @@ test_agent_identity_must_match_requested_harness() {
     fail "Herdr spawn accepted a Claude native-agent identity as Pi handoff evidence"
   fi
   assert_contains "$out" "no pi process or agent handoff appeared" "mismatched native-agent identity was not rejected"
-  [ -e "$FIXTURE/treehouse-returned" ] || fail "identity mismatch did not return its acquired worktree"
-  [ ! -f "$STATE/$ID.meta" ] || fail "identity mismatch left metadata after successful cleanup"
-  pass "fm-spawn Herdr handoff: native-agent evidence must identify the requested harness"
+  [ ! -e "$FIXTURE/treehouse-returned" ] || fail "identity mismatch destructively returned a possibly active worktree"
+  [ -f "$STATE/$ID.meta" ] || fail "identity mismatch discarded supervised recovery metadata"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr handoff: contradictory native identity preserves work for supervision"
 }
 
 test_candidate_worktree_is_returned_when_cwd_discovery_then_fails() {
@@ -327,10 +361,11 @@ test_candidate_worktree_is_returned_when_cwd_discovery_then_fails() {
     fail "Herdr spawn succeeded after cwd discovery stopped before worktree acceptance"
   fi
   assert_contains "$out" "did not enter a worktree" "cwd discovery failure was not reported"
-  [ -e "$FIXTURE/treehouse-returned" ] || fail "known acquired worktree was orphaned when cwd discovery timed out"
-  assert_contains "$(cat "$FIXTURE/treehouse.log")" "return --force $WORKTREE" "cleanup did not return the exact known candidate worktree"
-  [ ! -f "$STATE/$ID.meta" ] || fail "successful candidate-worktree cleanup left recovery metadata"
-  pass "fm-spawn Herdr abort: a validated acquisition candidate remains owned before ordinary cwd acceptance"
+  [ -e "$FIXTURE/treehouse-returned" ] || fail "closing the exact pane did not unwind its interactive Treehouse acquisition"
+  assert_not_contains "$(cat "$FIXTURE/treehouse.log")" "return --force" \
+    "an uncorroborated first cwd sample was claimed for destructive cleanup"
+  [ ! -f "$STATE/$ID.meta" ] || fail "successful pane-owned acquisition cleanup left recovery metadata"
+  pass "fm-spawn Herdr abort: an uncorroborated cwd sample is never claimed for forced return"
 }
 
 test_unrelated_checkout_is_never_claimed_for_cleanup() {
@@ -349,6 +384,22 @@ test_unrelated_checkout_is_never_claimed_for_cleanup() {
   pass "fm-spawn Herdr abort: transient checkouts outside the project common directory are never claimed"
 }
 
+test_sibling_worktree_transient_is_not_claimed() {
+  local out
+  make_fixture readiness-sibling-cwd
+  make_sibling_worktree
+  if out=$(FM_FAKE_READY_ACK_LIMIT=1 FM_FAKE_HANDOFF_MODE=raw \
+    FM_FAKE_TRANSIENT_CWD_READS=2 FM_FAKE_TRANSIENT_CWD="$SIBLING" \
+    run_spawn "sh -c 'echo never'" 2>&1); then
+    fail "Herdr spawn accepted another task's repeated sibling-worktree cwd"
+  fi
+  assert_contains "$out" "did not confirm ownership" "sibling cwd was not rejected by exact shell execution proof"
+  assert_not_contains "$(cat "$FIXTURE/treehouse.log")" "$SIBLING" \
+    "cleanup claimed a sibling worktree from repeated transient cwd reads"
+  [ -e "$FIXTURE/treehouse-returned" ] || fail "sibling rejection did not unwind the actual pane-owned acquisition"
+  pass "fm-spawn Herdr ownership: repeated sibling-worktree transients cannot grant cleanup or launch authority"
+}
+
 test_unqueryable_pane_preserves_recovery_metadata() {
   local out meta
   make_fixture readiness-pane-unknown
@@ -363,28 +414,43 @@ test_unqueryable_pane_preserves_recovery_metadata() {
   pass "fm-spawn Herdr abort: only positive pane absence permits recovery-record deletion"
 }
 
-test_cleanup_failure_preserves_owned_metadata() {
-  local out meta
-  make_fixture readiness-cleanup-fail
-  printf 'backend=herdr\nherdr_pane_id=stale:p9\n' > "$STATE/$ID.meta"
-  if out=$(FM_FAKE_READY_ACK_LIMIT=1 FM_FAKE_HANDOFF_MODE=raw FM_FAKE_TREEHOUSE_RETURN_FAIL=1 run_spawn "sh -c 'echo never'" 2>&1); then
-    fail "Herdr spawn succeeded despite second readiness and abort-return failures"
-  fi
+test_preserved_abort_metadata_is_guard_consumable() {
+  local meta
+  make_fixture readiness-recovery-meta
   meta="$STATE/$ID.meta"
-  [ -f "$meta" ] || fail "failed abort cleanup did not preserve recovery metadata"
-  assert_contains "$(cat "$meta")" "abort_cleanup=failed" "preserved metadata does not mark cleanup failure"
-  assert_contains "$(cat "$meta")" "worktree=$WORKTREE" "preserved metadata lost the acquired worktree"
-  assert_contains "$(cat "$meta")" "herdr_pane_id=w1:p2" "preserved metadata lost the new owned pane"
-  assert_not_contains "$(cat "$meta")" "herdr_pane_id=stale:p9" "cleanup failure retained stale ownership instead of the new pane"
-  pass "fm-spawn Herdr abort: cleanup failure preserves an owned recovery record instead of orphaning the task"
+  ROOT="$ROOT" STATE="$STATE" ID="$ID" PROJECT="$PROJECT" WORKTREE="$WORKTREE" bash -c '
+    eval "$(sed -n "/^herdr_preserve_abort_meta()/,/^}/p" "$ROOT/bin/fm-spawn.sh")"
+    T=fmtest:w1:p2
+    WT=$WORKTREE
+    HERDR_ABORT_WORKTREE=
+    PROJ_ABS=$PROJECT
+    HARNESS=pi
+    KIND=scout
+    MODE=no-mistakes
+    YOLO=off
+    TASK_TMP=/tmp/fm-test
+    MODEL=default
+    EFFORT=xhigh
+    HERDR_SES=fmtest
+    HERDR_WORKSPACE_ID=w1
+    HERDR_TAB_ID=w1:t2
+    HERDR_PANE_ID=w1:p2
+    herdr_preserve_abort_meta
+    . "$ROOT/bin/fm-backend.sh"
+    fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID"
+  ' || fail "preserved Herdr abort metadata was not consumable by the guarded endpoint validator"
+  assert_contains "$(cat "$meta")" "endpoint_task_id=$ID" "preserved abort metadata omitted its endpoint binding"
+  pass "fm-spawn Herdr abort: preserved recovery metadata is directly consumable by guarded cleanup"
 }
 
 test_success_uses_two_readiness_acks_and_one_launch_line
+test_readiness_uses_the_pane_shell_not_the_callers_shell
 test_first_readiness_failure_closes_only_task_pane
 test_second_readiness_failure_returns_worktree_and_closes_pane
-test_launch_handoff_failure_cleans_published_artifacts
+test_launch_handoff_failure_preserves_possible_worker_work
 test_agent_identity_must_match_requested_harness
 test_candidate_worktree_is_returned_when_cwd_discovery_then_fails
 test_unrelated_checkout_is_never_claimed_for_cleanup
+test_sibling_worktree_transient_is_not_claimed
 test_unqueryable_pane_preserves_recovery_metadata
-test_cleanup_failure_preserves_owned_metadata
+test_preserved_abort_metadata_is_guard_consumable

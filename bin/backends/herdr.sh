@@ -1153,7 +1153,10 @@ fm_backend_herdr_close_created_tab_exact() {  # <session> <workspace-id> <tab-id
     echo "error: could not verify cleanup of newly created herdr tab $tab_id in workspace $wsid (session $session)" >&2
     return 1
   }
-  if ! printf '%s' "$list" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1; then
+  if ! printf '%s' "$list" | jq -e '
+    (.result.tabs | type) == "array"
+    and all(.result.tabs[]?; type == "object" and (.tab_id | type) == "string" and (.tab_id | length) > 0)
+  ' >/dev/null 2>&1; then
     echo "error: could not parse cleanup verification for newly created herdr tab $tab_id in workspace $wsid (session $session)" >&2
     return 1
   fi
@@ -1755,9 +1758,9 @@ fm_backend_herdr_new_token() {  # <purpose>
 }
 
 fm_backend_herdr_wait_shell_ready() {  # <target> <expected-cwd> [boundary]
-  local target=$1 expected=$2 boundary=${3:-shell} polls stable_needed sleep_s session pane expected_shell
+  local target=$1 expected=$2 boundary=${3:-shell} polls stable_needed sleep_s session pane
   local i out row pid name cwd observed_real signature previous_signature="" stable=0
-  local token command cap
+  local token command cap expected_cksum
   fm_backend_herdr_parse_target "$target" || {
     echo "error: invalid herdr target '$target' for shell readiness" >&2
     return 1
@@ -1765,7 +1768,8 @@ fm_backend_herdr_wait_shell_ready() {  # <target> <expected-cwd> [boundary]
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
   expected=$(fm_backend_herdr_physical_path_or_raw "$expected")
-  expected_shell=$(basename "${SHELL:-sh}")
+  expected_cksum=$(printf '%s\n' "$expected" | cksum | awk '{print $1}')
+  case "$expected_cksum" in ''|*[!0-9]*) return 1 ;; esac
   polls=$FM_BACKEND_HERDR_READY_POLLS
   stable_needed=$FM_BACKEND_HERDR_READY_STABLE_POLLS
   sleep_s=$FM_BACKEND_HERDR_READY_POLL_SLEEP
@@ -1786,11 +1790,7 @@ fm_backend_herdr_wait_shell_ready() {  # <target> <expected-cwd> [boundary]
 $row
 EOF
     observed_real=$(fm_backend_herdr_physical_path_or_raw "$cwd")
-    case "$name" in
-      "$expected_shell") : ;;
-      *) pid= ;;
-    esac
-    if [ -n "$pid" ] && [ "$observed_real" = "$expected" ]; then
+    if [ -n "$pid" ] && [ -n "$name" ] && [ "$observed_real" = "$expected" ]; then
       signature="$pid:$name:$observed_real"
       if [ "$signature" = "$previous_signature" ]; then
         stable=$((stable + 1))
@@ -1811,14 +1811,18 @@ EOF
   fi
 
   token=$(fm_backend_herdr_new_token "ready_$boundary")
-  command="printf '%s\\n' '$token'"
+  command="printf '%s\\n' '$token'; pwd -P | cksum | awk '{print \$1}'"
   if ! fm_backend_herdr_cli "$session" pane run "$pane" "$command" >/dev/null 2>&1; then
     echo "error: herdr shell readiness canary could not be sent to pane $pane" >&2
     return 1
   fi
   for i in $(seq 1 "$polls"); do
     cap=$(fm_backend_herdr_cli "$session" pane read "$pane" --source recent --lines 200 2>/dev/null || true)
-    if printf '%s\n' "$cap" | grep -qxF "$token"; then
+    if printf '%s\n' "$cap" | awk -v token="$token" -v sum="$expected_cksum" '
+      previous == token && $0 == sum { found = 1 }
+      { previous = $0 }
+      END { exit(found ? 0 : 1) }
+    '; then
       return 0
     fi
     [ "$i" -eq "$polls" ] || sleep "$sleep_s"
@@ -1869,7 +1873,16 @@ fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
         ;;
     esac
   done <<EOF
-$(printf '%s' "$out" | jq -r '.result.process_info.foreground_processes[]? | [.name // "", .cmdline // ""] | @tsv' 2>/dev/null)
+$(printf '%s' "$out" | jq -r '
+  .result.process_info.foreground_processes[]?
+  | [
+      (if (.cmdline | type) == "string" then .cmdline else empty end),
+      (if (.argv0 | type) == "string" then .argv0 else empty end),
+      (if (.argv | type) == "array" then .argv[] | select(type == "string") else empty end)
+    ] as $command
+  | [.name // "", ($command | join(" "))]
+  | @tsv
+' 2>/dev/null)
 EOF
   return 1
 }

@@ -261,9 +261,11 @@ parse_orca_worktree_result() {
 
 herdr_preserve_abort_meta() {
   mkdir -p "$STATE" 2>/dev/null || return 1
-  if ! grep -qxF "herdr_pane_id=$HERDR_PANE_ID" "$STATE/$ID.meta" 2>/dev/null; then
+  if ! grep -qxF "herdr_pane_id=$HERDR_PANE_ID" "$STATE/$ID.meta" 2>/dev/null \
+     || ! grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null; then
     {
       echo "window=${T:-}"
+      echo "endpoint_task_id=$ID"
       echo "worktree=${WT:-${HERDR_ABORT_WORKTREE:-}}"
       echo "project=$PROJ_ABS"
       echo "harness=$HARNESS"
@@ -293,6 +295,14 @@ herdr_remove_abort_grok_auth() {
   token=$(cat "$STATE/$ID.grok-turnend-token" 2>/dev/null || true)
   case "$token" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
   hooks_dir="${GROK_HOME:-$HOME/.grok}/hooks/fm-turn-end.d"
+  rm -f "$hooks_dir/$token"
+}
+
+herdr_remove_abort_kimi_auth() {
+  local token hooks_dir
+  token=$(cat "$STATE/$ID.kimi-turnend-token" 2>/dev/null || true)
+  case "$token" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  hooks_dir="$HOME/.kimi-code/fm-turn-end.d"
   rm -f "$hooks_dir/$token"
 }
 
@@ -328,9 +338,11 @@ herdr_spawn_abort_cleanup() {
     return 1
   fi
   herdr_remove_abort_grok_auth
+  herdr_remove_abort_kimi_auth
   [ -z "${TASK_TMP:-}" ] || rm -rf "$TASK_TMP"
   rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
-    "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token"
+    "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
+    "$STATE/$ID.kimi-turnend-token"
   return 0
 }
 
@@ -1384,6 +1396,10 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # a mismatch just becomes the new candidate rather than resetting the wait, so a
   # pane that is already settled by the first real read only costs the one existing
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
+  # Herdr then requires the exact pane shell to execute the readiness canary and
+  # report that same physical cwd before the candidate gains cleanup ownership.
+  # This second correlation prevents repeated stale reads of a sibling worktree
+  # from authorizing launch or force-return of another task's copy.
   candidate=""
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
@@ -1391,10 +1407,14 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       p_real=$(real_path_or_raw "$p")
       if [ "$p_real" != "$PROJ_ABS_REAL" ] \
          && { [ "$BACKEND" != herdr ] || spawn_path_is_isolated_worktree "$p"; }; then
-        if [ "$BACKEND" = herdr ]; then
-          HERDR_ABORT_WORKTREE=$p
-        fi
         if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
+          if [ "$BACKEND" = herdr ]; then
+            fm_backend_herdr_wait_shell_ready "$T" "$p_real" treehouse || {
+              echo "error: Herdr treehouse shell did not confirm ownership of candidate $p_real" >&2
+              exit 1
+            }
+            HERDR_ABORT_WORKTREE=$p
+          fi
           WT="$p"
           break
         fi
@@ -1413,12 +1433,6 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
-  if [ "$BACKEND" = herdr ]; then
-    fm_backend_herdr_wait_shell_ready "$T" "$(real_path_or_raw "$WT")" treehouse || {
-      echo "error: Herdr treehouse shell was not ready before worker launch" >&2
-      exit 1
-    }
-  fi
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -1643,9 +1657,12 @@ if [ "$BACKEND" = herdr ]; then
   sq_launch_witness=$(shell_quote "$HERDR_LAUNCH_WITNESS")
   sq_gotmp=$(shell_quote "$TASK_TMP/gotmp")
   HERDR_LAUNCH="printf '%s\\n' $sq_launch_witness; export GOTMPDIR=$sq_gotmp; $LAUNCH"
+  # Once the launch line is submitted, a worker may already be changing its
+  # worktree even when handoff confirmation later stays uncertain. Preserve the
+  # published endpoint for supervised cleanup instead of force-returning work.
+  HERDR_ABORT_CLEANUP=0
   if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
     HERDR_PROJECTION_ABORT_CLEANUP=0
-    HERDR_ABORT_CLEANUP=0
     spawn_herdr_presentation_order_lock_release
   fi
   spawn_send_text_line "$T" "$HERDR_LAUNCH"

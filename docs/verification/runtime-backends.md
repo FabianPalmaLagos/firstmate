@@ -190,7 +190,27 @@ ok - real Pi/tmux control: equivalent isolated launch processed the brief and cl
 ok - real Pi spawn E2E: isolated tmux server and named Herdr lab removed; default Herdr session unchanged
 ```
 
-The deterministic cleanup, identity, worktree-ownership, partial-create, and witnessed-handoff boundaries are pinned by `tests/fm-spawn-herdr-readiness.test.sh` and `tests/fm-backend-herdr.test.sh`.
+The deterministic cleanup, identity, worktree-ownership, partial-create, and witnessed-handoff boundaries are pinned by `tests/fm-spawn-herdr-readiness.test.sh`, `tests/fm-backend-herdr.test.sh`, and `tests/fm-kimi-harness.test.sh`.
+
+The active safety counterexamples and corrections were verified on 2026-07-29 with:
+
+```sh
+bash tests/fm-spawn-herdr-readiness.test.sh
+bash tests/fm-backend-herdr.test.sh
+bash tests/fm-kimi-harness.test.sh
+```
+
+Observed correction evidence:
+
+```text
+ok - fm-spawn Herdr readiness: execution acknowledgement follows the pane process, not caller SHELL
+ok - fm-spawn Herdr handoff: uncertain post-submission ownership preserves worker work and recovery metadata
+ok - fm-spawn Herdr ownership: repeated sibling-worktree transients cannot grant cleanup or launch authority
+ok - fm-spawn Herdr abort: preserved recovery metadata is directly consumable by guarded cleanup
+ok - fm_backend_herdr_create_task: malformed tab entries preserve recovery ownership instead of proving absence
+ok - fm-spawn Herdr abort: Kimi token state and private authorization are retired together
+ok - fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence
+```
 
 ### Per-home and presentation topology
 
@@ -296,7 +316,22 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 ```
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
-The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+
+The dedicated daemon-terminal path ran on 2026-07-29 against Herdr 0.7.5 with:
+
+```sh
+bash tests/fm-afk-launch.test.sh
+```
+
+Observed readiness and rollback evidence:
+
+```text
+ok - herdr away launch: delayed shell executes one readiness canary before exactly one daemon launch
+ok - herdr away launch: readiness failure closes only the exact owned pane and rolls back away state
+ok - herdr e2e: captain tab pane count unchanged after start (no split)
+ok - herdr e2e: daemon workspace removed by exact id on stop
+ok - tmux e2e: captain window pane count unchanged after start (no split-window)
+```
 
 ## Zellij
 

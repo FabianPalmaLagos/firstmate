@@ -199,22 +199,27 @@ Herdr can publish a pane id or changed foreground cwd before the corresponding i
 A successful `pane run` can therefore mean that command text was injected while its synthetic Enter was lost.
 Displayed command text alone is not execution proof.
 
-`fm_backend_herdr_wait_shell_ready` polls process information until exactly one recognized shell remains stable at the expected physical cwd.
-It then sends one side-effect-free `printf` canary and requires the unique token as an exact standalone output line.
+`fm_backend_herdr_wait_shell_ready` polls process information until exactly one foreground process remains stable at the expected physical cwd.
+It does not assume the pane shell matches the caller's `SHELL`.
+It then sends one side-effect-free canary whose exact adjacent output lines contain a unique token and a short POSIX checksum of the shell's own physical `pwd`, proving execution and cwd together without terminal wrapping ambiguity.
 The canary is never retyped when acknowledgement is absent.
 
 `fm-spawn.sh` applies this boundary immediately after task-pane creation and again after Treehouse enters the acquired worktree.
 It sends the resolved worker command, `GOTMPDIR`, and a unique execution witness in one safely quoted line.
 Spawn accepts native-agent evidence only when its reported identity matches the requested harness; an arbitrary agent or identity-less status is not handoff proof.
 When native identity is absent, the witness still needs matching foreground-process evidence before spawn reports success.
+Process matching accepts Herdr's verified `cmdline`, `argv0`, and string `argv` response shapes.
 A contradictory native identity is rejected rather than overridden by process evidence.
 
-Any failure after task-pane creation keeps abort cleanup armed for the ordinary flat layout.
-The first Treehouse cwd candidate becomes task-owned only when it is an isolated worktree top level sharing the requested project's Git common directory.
-That owned candidate is retained before the shared two-sample cwd acceptance, so cleanup can return the exact copy even if later cwd reads fail.
-Cleanup closes the exact task pane and deletes recovery data only after Herdr positively reports that pane absent; unreadable state preserves the recovery record.
+Any failure after task-pane creation keeps abort cleanup armed for the ordinary flat layout until worker launch is submitted.
+Two matching Treehouse cwd samples must identify an isolated worktree top level in the requested project's Git common directory, then the execution canary must report that same physical cwd before the path becomes task-owned.
+Uncorroborated sibling-copy paths are never force-returned; closing the exact pre-launch pane lets the interactive Treehouse acquisition unwind its own copy.
+Once the worker launch line is submitted, destructive abort cleanup is disarmed because failed handoff confirmation cannot prove that the worker has not changed files.
+The already-published endpoint metadata remains for supervised cleanup and carries the exact task binding required by guarded teardown.
+Pre-launch cleanup closes the exact task pane and deletes recovery data only after Herdr positively reports that pane absent; unreadable state preserves the recovery record.
+Successful pre-launch cleanup also removes Grok and Kimi task-scoped private authorization artifacts with their state pointers.
 Response-derived tab and pane ids survive failed partial-create or husk-replacement cleanup until exact absence is verified.
-A partial task-create response containing only a tab id closes that exact new tab and verifies its absence before clearing the recovery id.
+A tab-list response proves absence only when every entry has the expected object and nonempty string id shape.
 Projected presentation tasks retain their stricter pre-submission cleanup-disarm boundary, while tmux and the other runtime providers retain their existing launch sequence.
 
 [`verification/runtime-backends.md`](verification/runtime-backends.md#spawn-readiness) owns the versioned real-Pi and tmux-control evidence for this boundary.
@@ -261,8 +266,9 @@ The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-a
 
 Harnesses with native tracked background execution can run the daemon in their terminal.
 Pi has no such mechanism.
-`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
-It never splits the captain's active tab and never uses shell `&`.
+`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, records the exact daemon pane, waits for that pane to pass the same execution-acknowledged shell-readiness boundary, and only then submits the daemon command with an explicit supervisor target and backend.
+It never splits the captain's active tab, retries a potentially pending daemon command, or uses shell `&`.
+A readiness failure closes only the recorded exact pane and rolls back the away lifecycle, while an unconfirmed close preserves the record for reconciliation.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
