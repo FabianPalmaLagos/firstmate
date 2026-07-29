@@ -193,6 +193,27 @@ A bare shell prompt is never an empty agent composer.
 Away-mode injection proceeds only on an affirmative `empty` result, never on unknown.
 This prevents a dead agent pane from receiving and possibly executing an escalation as shell input.
 
+## Execution-acknowledged spawn readiness
+
+Herdr can publish a pane id or changed foreground cwd before the corresponding interactive shell can execute terminal input.
+A successful `pane run` can therefore mean that command text was injected while its synthetic Enter was lost.
+Displayed command text alone is not execution proof.
+
+`fm_backend_herdr_wait_shell_ready` polls process information until exactly one recognized shell remains stable at the expected physical cwd.
+It then sends one side-effect-free `printf` canary and requires the unique token as an exact standalone output line.
+The canary is never retyped when acknowledgement is absent.
+
+`fm-spawn.sh` applies this boundary immediately after task-pane creation and again after Treehouse enters the acquired worktree.
+It sends the resolved worker command, `GOTMPDIR`, and a unique execution witness in one safely quoted line.
+Spawn accepts native-agent evidence only when its reported identity matches the requested harness; an arbitrary agent or identity-less status is not handoff proof.
+Otherwise the witness still needs matching foreground-process evidence before spawn reports success.
+
+Any failure after task-pane creation keeps abort cleanup armed for the ordinary flat layout.
+The first validated Treehouse cwd candidate remains task-owned before the shared two-sample cwd acceptance, so cleanup can return that exact copy even if later cwd reads fail.
+Cleanup closes the exact task pane and deletes recovery data only after Herdr positively reports that pane absent; unreadable state preserves the recovery record.
+A partial task-create response containing only a tab id closes that exact new tab and verifies its absence before returning failure.
+Projected presentation tasks retain their stricter pre-submission cleanup-disarm boundary, and other runtime providers retain their existing launch sequence.
+
 The current operational envelope starts with U+2063 and `FIRSTMATE_OP: `.
 The separate routed-request carrier uses `[fm-from-firstmate]` plus U+2063.
 U+2063 survives Herdr terminal input as text, unlike the legacy ASCII control separator that could erase the visible routing label.
@@ -280,6 +301,8 @@ tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
+tests/fm-spawn-herdr-readiness.test.sh
+tests/fm-spawn-pi-herdr-e2e.test.sh
 ```
 
 Real Herdr tests use the named lab helper and default-session tripwire.

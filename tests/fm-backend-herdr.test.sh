@@ -493,13 +493,15 @@ test_create_task_refuses_when_preexisting_husk_tab_remains() {
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-stale-husk","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-stale-husk","workspace_id":"w1"}]}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-stale-husk /tmp/proj' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-stale-husk /tmp/proj; status=$?; printf "\nrecovery=%s %s\n" "$FM_BACKEND_HERDR_CREATE_TAB_ID" "$FM_BACKEND_HERDR_CREATE_PANE_ID"; exit "$status"' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "create_task must fail when a preexisting same-labeled husk remains after close-and-replace"
   assert_contains "$out" "failed to remove preexisting herdr tab" "create_task did not report the stale preexisting husk tab"
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the stale husk by tab id"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t3' "create_task did not close the exact replacement tab after husk verification failed"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task should not rely on pane close for a preexisting husk"
-  pass "fm_backend_herdr_create_task: refuses success when a preexisting husk tab remains after replacement"
+  assert_contains "$out" "recovery=w1:t3 w1:p3" "failed replacement cleanup discarded its exact recovery identifiers"
+  pass "fm_backend_herdr_create_task: failed husk replacement cleanup preserves exact recovery identifiers"
 }
 
 test_create_task_refuses_when_agent_state_ambiguous() {
@@ -565,6 +567,41 @@ test_create_task_creates_and_parses_ids() {
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' \
     "create_task must never prune when called with no seeded default tab id (the 4th arg defaults to empty)"
   pass "fm_backend_herdr_create_task: creates a tab and parses tab_id/pane_id from the JSON response, prunes nothing when no seeded tab id is given"
+}
+
+test_create_task_closes_and_verifies_tab_when_pane_id_is_missing() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/create-task-tab-only"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-tab-only /tmp/proj' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task accepted a response missing its pane id"
+  assert_contains "$out" "could not parse tab/pane id" "create_task did not report the partial response"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' \
+    "create_task did not close the exact newly created tab when pane-id parsing failed"
+  [ "$(grep -c $'\x1f''tab'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w1' "$log")" -eq 2 ] \
+    || fail "create_task did not verify the exact tab was absent after cleanup"
+  pass "fm_backend_herdr_create_task: a tab-only create response closes and verifies the exact new tab"
+}
+
+test_create_task_preserves_tab_id_when_partial_cleanup_is_unverified() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/create-task-tab-only-unverified"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-tab-only","workspace_id":"w1"}]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-tab-only /tmp/proj; status=$?; printf "\nrecovery=%s %s\n" "$FM_BACKEND_HERDR_CREATE_TAB_ID" "$FM_BACKEND_HERDR_CREATE_PANE_ID"; exit "$status"' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task accepted a partial response whose tab cleanup was unverified"
+  assert_contains "$out" "newly created herdr tab w1:t2 remains" "create_task did not report the unverified partial cleanup"
+  assert_contains "$out" "recovery=w1:t2 " "create_task discarded the exact tab id after unverified cleanup"
+  pass "fm_backend_herdr_create_task: unverified partial cleanup retains the exact tab recovery id"
 }
 
 # --- container_ensure / create_task: --no-focus and per-home label ----------
@@ -1313,27 +1350,23 @@ test_spawn_task_lock_covers_all_backend_creation_and_metadata_publication() {
   pass "fm-spawn: one task lock spans every backend creation path through metadata publication"
 }
 
-test_projected_spawn_disarms_cleanup_before_ambiguous_launch_submission() {
-  local literal_pattern disarm_pattern release_pattern enter_pattern literal_line disarm_line release_line enter_line
+test_projected_spawn_disarms_cleanup_before_witnessed_launch_submission() {
+  local disarm_pattern release_pattern launch_pattern disarm_line release_line launch_line
   # These are literal source patterns for grep, so shell expansion would invalidate the assertion.
-  # shellcheck disable=SC2016
-  literal_pattern='spawn_send_literal "$T" "$LAUNCH"'
   # shellcheck disable=SC2016
   disarm_pattern='HERDR_PROJECTION_ABORT_CLEANUP=0'
   release_pattern='spawn_herdr_presentation_order_lock_release'
   # shellcheck disable=SC2016
-  enter_pattern='spawn_send_key "$T" Enter'
-  literal_line=$(grep -nF "$literal_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  launch_pattern='spawn_send_text_line "$T" "$HERDR_LAUNCH"'
   disarm_line=$(grep -nF "$disarm_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
   release_line=$(grep -nF "$release_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
-  enter_line=$(grep -nF "$enter_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
-  [ -n "$literal_line" ] && [ -n "$disarm_line" ] && [ -n "$release_line" ] && [ -n "$enter_line" ] \
-    || fail "could not locate the projected launch cleanup boundary"
-  [ "$literal_line" -lt "$disarm_line" ] \
-    && [ "$disarm_line" -lt "$release_line" ] \
-    && [ "$release_line" -lt "$enter_line" ] \
-    || fail "projected spawn must disarm cleanup before releasing its lock and submitting ambiguous Enter"
-  pass "fm-spawn: projected cleanup disarms before lock release and ambiguous launch submission"
+  launch_line=$(grep -nF "$launch_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  [ -n "$disarm_line" ] && [ -n "$release_line" ] && [ -n "$launch_line" ] \
+    || fail "could not locate the projected witnessed-launch cleanup boundary"
+  [ "$disarm_line" -lt "$release_line" ] \
+    && [ "$release_line" -lt "$launch_line" ] \
+    || fail "projected spawn must disarm cleanup before releasing its lock and submitting the witnessed launch"
+  pass "fm-spawn: projected cleanup disarms before lock release and witnessed launch submission"
 }
 
 test_projected_abort_cleanup_holds_presentation_lock() {
@@ -1346,6 +1379,7 @@ test_projected_abort_cleanup_holds_presentation_lock() {
   ROOT="$ROOT" LOCK="$lock" STARTED="$started" PROCEED="$proceed" FUNCTION_SOURCE="$function_source" bash -c '
     . "$ROOT/bin/fm-wake-lib.sh"
     eval "$FUNCTION_SOURCE"
+    herdr_spawn_abort_cleanup() { return 0; }
     fm_backend_herdr_projection_cleanup_exact() {
       : > "$STARTED"
       while [ ! -e "$PROCEED" ]; do sleep 0.01; done
@@ -3002,6 +3036,8 @@ test_create_task_refuses_when_preexisting_husk_tab_remains
 test_create_task_refuses_when_agent_state_ambiguous
 test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
+test_create_task_closes_and_verifies_tab_when_pane_id_is_missing
+test_create_task_preserves_tab_id_when_partial_cleanup_is_unverified
 test_create_task_creates_with_no_focus_flag
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
@@ -3029,7 +3065,7 @@ test_presentation_lock_malformed_socket_falls_back
 test_projection_order_rejects_malformed_socket
 test_presentation_lock_insecure_namespace_falls_back
 test_spawn_task_lock_covers_all_backend_creation_and_metadata_publication
-test_projected_spawn_disarms_cleanup_before_ambiguous_launch_submission
+test_projected_spawn_disarms_cleanup_before_witnessed_launch_submission
 test_projected_abort_cleanup_holds_presentation_lock
 test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
