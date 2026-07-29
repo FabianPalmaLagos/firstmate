@@ -75,7 +75,7 @@ Both recorded runtime identities now classify the exact `pi-launcher` foreground
 
 Backend applicability was reviewed across every spawn adapter.
 Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identities for recovery-grade liveness.
-Herdr uses native registered-agent state and needs no process-name branch.
+Herdr still uses native registered-agent state for recovery-grade liveness, while spawn handoff now has a bounded process-name fallback only when native identity is absent.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
 The structural multi-row composer reader, Kimi pointer-delivery path, and OpenCode 1.18.4 busy-queue behavior are pinned by:
@@ -120,9 +120,9 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 16 on macOS aarch64, with earlier 0.7.4, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
+The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier protocol-16, protocol-14, 0.7.4, and 0.7.3 evidence retained where they define current behavior or fallbacks.
 
-Core read-only probes:
+The retained protocol-16 core read-only probes were:
 
 ```sh
 herdr --version
@@ -172,6 +172,25 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 ```
 
 Observed guarantee: a restored no-agent tab was replaced create-before-close, while a registered live agent caused refusal.
+
+### Spawn readiness
+
+The execution-acknowledged Pi spawn path ran on 2026-07-29 against Herdr 0.7.5 protocol 17:
+
+```sh
+FM_HERDR_PI_SPAWN_E2E=1 \
+  tests/fm-spawn-pi-herdr-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - real Pi/Herdr: auto-detected spawn waited through both delayed shells, started Pi, processed the brief, and cleaned the task
+ok - real Pi/tmux control: equivalent isolated launch processed the brief and cleaned the task
+ok - real Pi spawn E2E: isolated tmux server and named Herdr lab removed; default Herdr session unchanged
+```
+
+The deterministic cleanup, identity, worktree-ownership, partial-create, and witnessed-handoff boundaries are pinned by `tests/fm-spawn-herdr-readiness.test.sh` and `tests/fm-backend-herdr.test.sh`.
 
 ### Per-home and presentation topology
 
