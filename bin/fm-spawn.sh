@@ -413,17 +413,20 @@ trap spawn_abort_cleanup EXIT
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} attempt lock_path polls sleep_s
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
+  polls=${FM_HERDR_PRESENTATION_LOCK_POLLS:-1500}
+  sleep_s=${FM_HERDR_PRESENTATION_LOCK_SLEEP:-0.1}
+  case "$polls" in ''|*[!0-9]*|0) polls=1500 ;; esac
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$polls" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
     fi
-    sleep 0.1
+    sleep "$sleep_s"
     attempt=$((attempt + 1))
   done
   return 1
@@ -1222,9 +1225,6 @@ case "$BACKEND" in
     fi
     T="$HERDR_SES:$HERDR_PANE_ID"
     HERDR_ABORT_CLEANUP=1
-    if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
-      spawn_herdr_presentation_order_lock_release
-    fi
     fm_backend_herdr_wait_shell_ready "$T" "$PROJ_ABS_REAL" task || {
       echo "error: Herdr task pane was not ready before treehouse handoff" >&2
       exit 1
@@ -1663,10 +1663,12 @@ if [ "$BACKEND" = herdr ]; then
   HERDR_ABORT_CLEANUP=0
   if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
     HERDR_PROJECTION_ABORT_CLEANUP=0
-    spawn_herdr_presentation_order_lock_release
   fi
   spawn_send_text_line "$T" "$HERDR_LAUNCH"
   fm_backend_herdr_wait_launch_handoff "$T" "$HARNESS" "$HERDR_LAUNCH_WITNESS" || exit 1
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
+    spawn_herdr_presentation_order_lock_release
+  fi
   HERDR_ABORT_CLEANUP=0
 else
   # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
