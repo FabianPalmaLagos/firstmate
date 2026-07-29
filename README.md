@@ -106,6 +106,7 @@ FM_PI_HARNESS=pi-signed pi-signed
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
 For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.
+To keep the Pi session on a clone-private profile instead of your ordinary global one - the reproducible setup for a shared team - launch it through `bin/fm-pi.sh` on macOS, Linux, or Git Bash, or `bin\fm-pi.ps1` in Windows PowerShell; [docs/isolated-pi-setup.md](docs/isolated-pi-setup.md) owns that path end to end.
 Pi's `/calm` toggle hides supported transcript chrome, including canonically classified Firstmate operational user rows, while retaining native working activity and all model context and session data.
 The hidden operational inputs remain ordinary user-role messages with unchanged delivery, ordering, authority, persistence, and exports.
 The preference persists for the effective Firstmate home, and toggling it off restores ordinary rendering.
@@ -191,6 +192,7 @@ Firstmate's skills live in two separate places with different audiences:
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional X mode, the files you set, and harness support.
+- [docs/isolated-pi-setup.md](docs/isolated-pi-setup.md) - macOS and Windows setup for a clone-private Pi profile, including authentication, trust, and an isolation checklist.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
 - [docs/wedge-alarm.md](docs/wedge-alarm.md) - configure the active alert for an away-mode escalation delivery that gets stuck.
 - [docs/tmux-backend.md](docs/tmux-backend.md) - current setup and limits for the tmux reference backend.

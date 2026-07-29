@@ -206,6 +206,7 @@ Kimi continues to use the captain's normal Kimi home, including the existing con
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+A Pi primary session can be launched against a clone-private Pi profile instead of the machine's global one; [`docs/isolated-pi-setup.md`](isolated-pi-setup.md) owns that setup path and its `PI_CODING_AGENT_DIR` boundary.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
