@@ -1376,7 +1376,7 @@ test_projected_spawn_holds_lock_through_witnessed_handoff() {
   # shellcheck disable=SC2016
   launch_pattern='spawn_send_text_line "$T" "$HERDR_LAUNCH"'
   # shellcheck disable=SC2016
-  handoff_pattern='fm_backend_herdr_wait_launch_handoff "$T" "$HARNESS" "$HERDR_LAUNCH_WITNESS"'
+  handoff_pattern='fm_backend_herdr_wait_launch_handoff "$T" "$HERDR_HANDOFF_SPEC" "$HERDR_LAUNCH_WITNESS"'
   disarm_line=$(grep -nF "$disarm_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
   release_line=$(grep -nF "$release_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
   launch_line=$(grep -nF "$launch_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)

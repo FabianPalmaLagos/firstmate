@@ -1359,22 +1359,65 @@ test_herdr_projection_teardown_retires_journal_only_after_confirmed_close() {
 }
 
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
-  local case_dir log closed restored
+  local case_dir log closed restored rc
   case_dir=$(make_case herdr-projection-unconfirmed-close)
   write_meta "$case_dir" local-only ship
   configure_herdr_projection_teardown_case "$case_dir"
   log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
 
+  set +e
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" FM_FAKE_HERDR_CLOSE_FAIL=1 \
-    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
-    || fail "herdr-projection-unconfirmed-close: teardown should preserve best-effort endpoint semantics"
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "herdr-projection-unconfirmed-close: teardown must refuse without exact pane absence"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "unconfirmed task-pane close incorrectly retired authoritative metadata"
   [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
     || fail "unconfirmed task-pane close incorrectly retired the presentation journal"
-  assert_grep "close could not be confirmed" "$case_dir/stderr" \
-    "unconfirmed projected close did not explain why the journal was retained"
+  assert_grep "exact projected Herdr pane absence is unconfirmed" "$case_dir/stderr" \
+    "unconfirmed projected close did not explain why metadata was preserved"
   assert_not_contains "$(cat "$log")" "workspace close" \
     "unconfirmed projected close must not escalate to workspace cleanup"
-  pass "herdr projection teardown retains the stale journal and attempts no workspace cleanup when exact-pane close is unconfirmed"
+  pass "herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed"
+}
+
+test_herdr_uncorrelated_projection_refuses_focus_unsafe_close() {
+  local case_dir log closed restored rc
+  case_dir=$(make_case herdr-projection-uncorrelated)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  sed -i.bak 's/^projection_id=.*/projection_id=ZyXwVuTsRqPoNmLkJiHgFe/' \
+    "$case_dir/state/task-x1.herdr-presentation"
+  rm -f "$case_dir/state/task-x1.herdr-presentation.bak"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  set +e
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "herdr-projection-uncorrelated: teardown must refuse without exact pane absence"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "uncorrelated projection incorrectly retired authoritative metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "uncorrelated projection incorrectly retired its quarantined journal"
+  assert_not_contains "$(cat "$log")" "pane close" \
+    "uncorrelated projection used a generic focus-unsafe pane close"
+  pass "uncorrelated Herdr projection preserves metadata without a generic pane close"
+}
+
+test_projected_child_cleanup_uses_guarded_projection_path() {
+  local body guarded_line generic_line
+  body=$(sed -n '/^cleanup_firstmate_home_children()/,/^remove_secondmate_registry_entry()/p' \
+    "$ROOT/bin/fm-teardown.sh")
+  guarded_line=$(printf '%s\n' "$body" | grep -n 'cleanup_projected_herdr_endpoint' | head -1 | cut -d: -f1)
+  generic_line=$(printf '%s\n' "$body" | grep -n 'elif \[ -n "\$child_t" \]' | head -1 | cut -d: -f1)
+  [ -n "$guarded_line" ] && [ -n "$generic_line" ] && [ "$guarded_line" -lt "$generic_line" ] \
+    || fail "forced secondmate projected-child cleanup does not route through the guarded projection path"
+  pass "forced secondmate projected-child cleanup routes before generic endpoint kill"
 }
 
 test_local_only_fork_remote_allows
@@ -1388,6 +1431,8 @@ test_local_only_force_overrides_unpushed
 test_herdr_teardown_clears_escalation_marker
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_uncorrelated_projection_refuses_focus_unsafe_close
+test_projected_child_cleanup_uses_guarded_projection_path
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows

@@ -595,6 +595,7 @@ launch_template() {
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    HERDR_HANDOFF_SPEC=$LAUNCH
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -627,6 +628,7 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+[ -n "${HERDR_HANDOFF_SPEC:-}" ] || HERDR_HANDOFF_SPEC=$HARNESS
 
 case "$HARNESS" in
   pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
@@ -1699,7 +1701,7 @@ if [ "$BACKEND" = herdr ]; then
     HERDR_PROJECTION_ABORT_CLEANUP=0
   fi
   spawn_send_text_line "$T" "$HERDR_LAUNCH"
-  if ! fm_backend_herdr_wait_launch_handoff "$T" "$HARNESS" "$HERDR_LAUNCH_WITNESS"; then
+  if ! fm_backend_herdr_wait_launch_handoff "$T" "$HERDR_HANDOFF_SPEC" "$HERDR_LAUNCH_WITNESS"; then
     grep -qxF 'handoff_uncertain=1' "$STATE/$ID.meta" 2>/dev/null \
       || echo 'handoff_uncertain=1' >> "$STATE/$ID.meta"
     exit 1
