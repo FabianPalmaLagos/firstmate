@@ -164,6 +164,19 @@ meta_value() {
   fm_meta_get "$meta" "$key"
 }
 
+require_pre_worktree_herdr_endpoint_absent() {
+  local meta=$1 id=$2 session pane state
+  grep -qxF 'abort_cleanup_stage=pre-worktree' "$meta" 2>/dev/null || return 0
+  session=$(meta_value "$meta" herdr_session)
+  pane=$(meta_value "$meta" herdr_pane_id)
+  fm_backend_source herdr || return 1
+  state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
+  if [ "$state" != dead ]; then
+    echo "REFUSED: task $id exact pre-worktree Herdr pane absence is unconfirmed (state=$state); preserving task state." >&2
+    return 1
+  fi
+}
+
 require_orca_worktree_id() {
   local meta=$1 id
   id=$(meta_value "$meta" orca_worktree_id)
@@ -1003,6 +1016,7 @@ cleanup_firstmate_home_children() {
         fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" 2>/dev/null || true
       fi
     fi
+    require_pre_worktree_herdr_endpoint_absent "$child_meta" "$child_id" || return 1
     if [ "$child_kind" = secondmate ]; then
       child_home=$(meta_value "$child_meta" home)
       [ -n "$child_home" ] || child_home=$child_wt
@@ -1161,6 +1175,7 @@ fi
 
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
+HERDR_PRESENTATION_ENDPOINT_RETIRE_ALLOWED=1
 HERDR_PRESENTATION_SESSION=
 HERDR_PRESENTATION_PANE=
 if [ "$BACKEND" = herdr ] \
@@ -1203,6 +1218,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     fm_lock_release "$HERDR_PRESENTATION_FOCUS_LOCK" || true
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
+    HERDR_PRESENTATION_ENDPOINT_RETIRE_ALLOWED=0
   fi
 elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
@@ -1212,11 +1228,18 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"
   else
     echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+    HERDR_PRESENTATION_ENDPOINT_RETIRE_ALLOWED=0
   fi
 elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
 fi
+if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ] \
+   && [ "$HERDR_PRESENTATION_ENDPOINT_RETIRE_ALLOWED" != 1 ]; then
+  echo "REFUSED: projected Herdr endpoint retirement is unconfirmed for $ID; preserving task state." >&2
+  exit 1
+fi
+require_pre_worktree_herdr_endpoint_absent "$META" "$ID" || exit 1
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
   remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID"

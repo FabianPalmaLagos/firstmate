@@ -1484,6 +1484,57 @@ test_projected_abort_cleanup_holds_presentation_lock() {
   pass "fm-spawn: projected abort cleanup remains serialized by the presentation lock"
 }
 
+test_projected_abort_lock_timeout_preserves_endpoint_metadata() {
+  local dir state function_source rc
+  dir="$TMP_ROOT/projection-abort-lock-timeout"; state="$dir/state"
+  mkdir -p "$state" "$dir/project"
+  function_source=$(sed -n '/^herdr_preserve_abort_meta()/,/^trap spawn_abort_cleanup EXIT/p' "$ROOT/bin/fm-spawn.sh" | sed '$d')
+  if ROOT="$ROOT" STATE="$state" FUNCTION_SOURCE="$function_source" PROJECT="$dir/project" bash -c '
+    eval "$FUNCTION_SOURCE"
+    spawn_herdr_presentation_order_lock_acquire() { return 1; }
+    fm_backend_herdr_projection_cleanup_exact() { return 99; }
+    fm_backend_herdr_pane_agent_state() { printf dead; }
+    fm_lock_release() { return 0; }
+    ID=projection-timeout
+    T=fmtest:w9:p2
+    WT=
+    PROJ_ABS=$PROJECT
+    HARNESS=pi
+    KIND=scout
+    MODE=no-mistakes
+    YOLO=off
+    TASK_TMP=
+    MODEL=default
+    EFFORT=xhigh
+    HERDR_SES=fmtest
+    HERDR_WORKSPACE_ID=w9
+    HERDR_TAB_ID=w9:t2
+    HERDR_PANE_ID=w9:p2
+    HERDR_PROJECTED=1
+    HERDR_ABORT_CLEANUP=1
+    HERDR_ABORT_METADATA_RETIRE_ALLOWED=1
+    HERDR_ABORT_WORKTREE=
+    HERDR_PROJECTION_ABORT_CLEANUP=1
+    HERDR_PROJECTION_ABORT_SESSION=fmtest
+    HERDR_PROJECTION_ABORT_TASK_PANE=w9:p2
+    HERDR_PROJECTION_ABORT_SEEDED_PANE=w9:p1
+    HERDR_PRESENTATION_ORDER_LOCK_HELD=0
+    ORCA_ABORT_CLEANUP=0
+    SPAWN_TASK_LOCK_HELD=0
+    CONFIG_INHERIT_LOCK_HELD=0
+    spawn_abort_cleanup
+  ' > "$dir/stdout" 2> "$dir/stderr"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 0 ] || fail "projection lock timeout reported successful authoritative cleanup"
+  [ -f "$state/projection-timeout.meta" ] || fail "projection lock timeout retired authoritative endpoint metadata"
+  assert_contains "$(cat "$state/projection-timeout.meta")" "abort_cleanup=failed" \
+    "projection lock timeout did not mark retained endpoint metadata"
+  pass "fm-spawn: projection lock timeout preserves authoritative endpoint metadata"
+}
+
 test_projection_reclaim_refusal_matrix_is_non_mutating() {
   local dir state home other_home home_real journal legacy token label out mutation_log
   dir="$TMP_ROOT/projection-reclaim-refusals"; state="$dir/state"; home="$dir/home"; other_home="$dir/other-home"
@@ -1734,6 +1785,41 @@ test_handoff_process_matches_raw_executable_only() {
     fail "prefixed raw executable inherited the built-in Codex native identity"
   fi
   pass "Herdr raw handoff requires exact requested-executable evidence for prefixed names"
+}
+
+test_handoff_process_matches_effective_prefixed_raw_executable() {
+  local json harness
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":76,"name":"custom-agent","argv0":"/opt/custom-agent","argv":["/opt/custom-agent","--flag"],"cmdline":"/opt/custom-agent --flag"}]}}}'
+  for harness in \
+    "env FOO=bar custom-agent --flag" \
+    "exec custom-agent --flag" \
+    "command custom-agent --flag" \
+    "FOO=bar exec env BAR=baz custom-agent --flag"; do
+    ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "$1" "$2"' _ "$harness" "$json" \
+      || fail "raw handoff rejected effective executable for prefix form: $harness"
+  done
+  for harness in \
+    "env custom-agent --flag" \
+    "env FOO=bar" \
+    "exec command custom-agent" \
+    "command exec custom-agent" \
+    "env FOO=bar command custom-agent" \
+    "env FOO=bar 'custom-agent'"; do
+    if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "$1" "$2"' _ "$harness" "$json"; then
+      fail "raw handoff accepted malformed or ambiguous prefix form: $harness"
+    fi
+  done
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":79,"name":"sh","argv0":"/bin/sh","argv":["/bin/sh","-c","echo ok"],"cmdline":"/bin/sh -c echo ok"}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "sh -c '"'"'echo ok'"'"'" "$1"' _ "$json" \
+    || fail "raw handoff rejected a direct executable with quoted arguments"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":77,"name":"node","argv0":"node","argv":["node","/opt/codex"],"cmdline":"node /opt/codex"}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "env FOO=bar codex" "$1"' _ "$json"; then
+    fail "raw env prefix granted built-in Codex wrapper identity"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":78,"name":"codex","argv0":"/opt/codex","argv":["/opt/codex"],"cmdline":"/opt/codex"}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "env FOO=bar codex" "$1"' _ "$json" \
+    || fail "raw env prefix rejected exact structural Codex executable evidence"
+  pass "Herdr raw handoff derives only unambiguous prefixed executables without built-in identity"
 }
 
 test_parse_target() {
@@ -3179,6 +3265,7 @@ test_spawn_task_lock_covers_all_backend_creation_and_metadata_publication
 test_projected_spawn_holds_lock_through_witnessed_handoff
 test_presentation_lock_serializes_focus_order_through_handoff
 test_projected_abort_cleanup_holds_presentation_lock
+test_projected_abort_lock_timeout_preserves_endpoint_metadata
 test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
@@ -3186,6 +3273,7 @@ test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
 test_handoff_process_matches_kimi_linux_argv
 test_handoff_process_matches_raw_executable_only
+test_handoff_process_matches_effective_prefixed_raw_executable
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read

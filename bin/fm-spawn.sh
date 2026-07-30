@@ -232,6 +232,7 @@ HERDR_PROJECTION_ABORT_SEEDED_PANE=
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
 HERDR_ABORT_CLEANUP=0
+HERDR_ABORT_METADATA_RETIRE_ALLOWED=1
 HERDR_ABORT_WORKTREE=
 HERDR_SES=
 HERDR_WORKSPACE_ID=
@@ -315,6 +316,7 @@ herdr_spawn_abort_cleanup() {
   local cleanup_failed=0 return_out='' cleanup_wt pane_state
   [ "$HERDR_ABORT_CLEANUP" = 1 ] || return 0
   HERDR_ABORT_CLEANUP=0
+  [ "$HERDR_ABORT_METADATA_RETIRE_ALLOWED" = 1 ] || cleanup_failed=1
   cleanup_wt=${WT:-${HERDR_ABORT_WORKTREE:-}}
   if [ -n "$cleanup_wt" ] && [ -d "$cleanup_wt" ] && [ "$(real_path_or_raw "$cleanup_wt")" != "${PROJ_ABS_REAL:-}" ]; then
     if ! return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$cleanup_wt" ) 2>&1 ); then
@@ -358,6 +360,7 @@ spawn_abort_cleanup() {
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
       echo "warning: herdr presentation focus lock unavailable; retaining the projection journal and refusing concurrent abort cleanup" >&2
       HERDR_PROJECTION_ABORT_CLEANUP=0
+      HERDR_ABORT_METADATA_RETIRE_ALLOWED=0
     fi
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ]; then

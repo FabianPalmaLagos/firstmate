@@ -1849,12 +1849,55 @@ fm_backend_herdr_agent_matches_harness() {  # <harness> <native-agent-identity>
   [ "$agent" = "$expected" ]
 }
 
+fm_backend_herdr_raw_assignment() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./@%+:,-]*$ ]]
+}
+
+fm_backend_herdr_raw_executable() {
+  local harness=$1 token index=0 count assignment_count=0
+  local -a words
+  case "$harness" in
+    ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
+  read -r -a words <<< "$harness"
+  count=${#words[@]}
+  [ "$count" -gt 0 ] || return 1
+  while [ "$index" -lt "$count" ] \
+        && fm_backend_herdr_raw_assignment "${words[$index]}"; do
+    index=$((index + 1))
+  done
+  if [ "$index" -lt "$count" ]; then
+    case "${words[$index]}" in
+      exec|command) index=$((index + 1)) ;;
+    esac
+  fi
+  [ "$index" -lt "$count" ] || return 1
+  if [ "${words[$index]}" = env ]; then
+    index=$((index + 1))
+    while [ "$index" -lt "$count" ] \
+          && fm_backend_herdr_raw_assignment "${words[$index]}"; do
+      assignment_count=$((assignment_count + 1))
+      index=$((index + 1))
+    done
+    [ "$assignment_count" -gt 0 ] || return 1
+  fi
+  [ "$index" -lt "$count" ] || return 1
+  token=${words[$index]}
+  case "$token" in
+    ''|*=*|exec|command|env|-*|*[!A-Za-z0-9_./@%+:-]*)
+      return 1
+      ;;
+  esac
+  basename "$token"
+}
+
 fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
   local harness=$1 out=$2 name cmdline expected native_expected verified=0
-  expected=$(basename "${harness%% *}")
   if native_expected=$(fm_backend_herdr_native_harness_identity "$harness"); then
     expected=$native_expected
     verified=1
+  else
+    expected=$(fm_backend_herdr_raw_executable "$harness") || return 1
   fi
   if [ "$verified" -eq 0 ]; then
     printf '%s' "$out" | jq -e --arg expected "$expected" '
