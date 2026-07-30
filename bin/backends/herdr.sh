@@ -1831,31 +1831,31 @@ EOF
   return 1
 }
 
-fm_backend_herdr_agent_matches_harness() {  # <harness> <native-agent-identity>
-  local harness=$1 agent=$2 expected
-  case "$harness" in
-    claude) expected=claude ;;
-    codex) expected=codex ;;
-    opencode) expected=opencode ;;
-    pi|pi-signed) expected=pi ;;
-    grok) expected=grok ;;
-    kimi) expected=kimi ;;
+fm_backend_herdr_native_harness_identity() {  # <harness>
+  case "$1" in
+    claude) printf 'claude' ;;
+    codex) printf 'codex' ;;
+    opencode) printf 'opencode' ;;
+    pi|pi-signed) printf 'pi' ;;
+    grok) printf 'grok' ;;
+    kimi) printf 'kimi' ;;
     *) return 1 ;;
   esac
+}
+
+fm_backend_herdr_agent_matches_harness() {  # <harness> <native-agent-identity>
+  local harness=$1 agent=$2 expected
+  expected=$(fm_backend_herdr_native_harness_identity "$harness") || return 1
   [ "$agent" = "$expected" ]
 }
 
 fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
-  local harness=$1 out=$2 name cmdline expected verified=0
+  local harness=$1 out=$2 name cmdline expected native_expected verified=0
   expected=$(basename "${harness%% *}")
-  case "$harness" in
-    claude) expected=claude; verified=1 ;;
-    codex) expected=codex; verified=1 ;;
-    opencode) expected=opencode; verified=1 ;;
-    pi|pi-signed) expected=pi; verified=1 ;;
-    grok) expected=grok; verified=1 ;;
-    kimi) expected=kimi; verified=1 ;;
-  esac
+  if native_expected=$(fm_backend_herdr_native_harness_identity "$harness"); then
+    expected=$native_expected
+    verified=1
+  fi
   if [ "$verified" -eq 0 ]; then
     printf '%s' "$out" | jq -e --arg expected "$expected" '
       .result.process_info.foreground_processes[]?
@@ -1926,7 +1926,8 @@ fm_backend_herdr_wait_launch_handoff() {  # <target> <harness> <witness-token>
       if fm_backend_herdr_agent_matches_harness "$harness" "$agent"; then
         return 0
       fi
-      if [ -z "$agent" ]; then
+      if [ -z "$agent" ] \
+         || ! fm_backend_herdr_native_harness_identity "$harness" >/dev/null; then
         out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null || true)
         if fm_backend_herdr_handoff_process_matches "$harness" "$out"; then
           return 0

@@ -97,6 +97,8 @@ case "$cmd $sub" in
         printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"node","cmdline":"node /opt/pi --thinking xhigh","cwd":"%s"}]}}}\n' "$cwd"
       elif [ "${FM_FAKE_HANDOFF_MODE:-raw}" = wrong-agent ]; then
         printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"node","cmdline":"node /opt/pi --thinking xhigh","cwd":"%s"}]}}}\n' "$cwd"
+      elif [ "${FM_FAKE_HANDOFF_MODE:-raw}" = custom-native ]; then
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"codex-helper","cmdline":"/opt/codex-helper --flag","cwd":"%s"}]}}}\n' "$cwd"
       elif [ "${FM_FAKE_HANDOFF_MODE:-raw}" = raw-stale-shell ]; then
         printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"zsh","cmdline":"-zsh","cwd":"%s"}]}}}\n' "$cwd"
       else
@@ -169,6 +171,8 @@ case "$cmd $sub" in
       printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n'
     elif [ "$pane" = w1:p2 ] && [ "$(cat "$state/launched")" = 1 ] && [ "${FM_FAKE_HANDOFF_MODE:-raw}" = wrong-agent ]; then
       printf '{"result":{"agent":{"agent":"claude","agent_status":"working"}}}\n'
+    elif [ "$pane" = w1:p2 ] && [ "$(cat "$state/launched")" = 1 ] && [ "${FM_FAKE_HANDOFF_MODE:-raw}" = custom-native ]; then
+      printf '{"result":{"agent":{"agent":"codex","agent_status":"working"}}}\n'
     else
       printf '{"error":{"code":"agent_not_found"}}\n'
     fi
@@ -358,6 +362,18 @@ test_raw_handoff_must_match_requested_executable() {
   pass "fm-spawn Herdr raw handoff: a different pane shell cannot impersonate the requested executable"
 }
 
+test_raw_handoff_uses_process_evidence_with_native_identity() {
+  local out
+  make_fixture readiness-raw-native-wrapper
+  out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=custom-native \
+    run_spawn "codex-helper --flag" 2>&1) \
+    || fail "raw wrapper rejected exact process evidence when Herdr reported its underlying native identity: $out"
+  assert_contains "$out" "spawned $ID" \
+    "raw wrapper did not complete through requested-executable process evidence"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr raw handoff: native identity does not suppress exact wrapper process evidence"
+}
+
 test_agent_identity_must_match_requested_harness() {
   local out
   make_fixture readiness-agent-mismatch
@@ -538,6 +554,7 @@ test_first_readiness_failure_closes_only_task_pane
 test_second_readiness_failure_returns_worktree_and_closes_pane
 test_launch_handoff_failure_preserves_possible_worker_work
 test_raw_handoff_must_match_requested_executable
+test_raw_handoff_uses_process_evidence_with_native_identity
 test_agent_identity_must_match_requested_harness
 test_candidate_worktree_is_returned_when_cwd_discovery_then_fails
 test_unrelated_checkout_is_never_claimed_for_cleanup
