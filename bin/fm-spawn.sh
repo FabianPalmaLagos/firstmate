@@ -496,7 +496,9 @@ if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
   fi
   if [ -f "$STATE/$ID.meta" ] \
      && grep -qxF 'backend=herdr' "$STATE/$ID.meta" 2>/dev/null \
-     && grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null; then
+     && grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null \
+     && { [ "$BACKEND" != herdr ] \
+          || ! grep -qxF 'handoff_confirmed=1' "$STATE/$ID.meta" 2>/dev/null; }; then
     if ! fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" \
        || ! fm_backend_source herdr \
        || ! fm_backend_herdr_parse_target "$FM_BACKEND_VALIDATED_TARGET"; then
@@ -1745,6 +1747,10 @@ if [ "$KIND" = secondmate ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
+fi
+if [ "$BACKEND" = herdr ]; then
+  grep -qxF 'handoff_confirmed=1' "$STATE/$ID.meta" 2>/dev/null \
+    || echo 'handoff_confirmed=1' >> "$STATE/$ID.meta"
 fi
 
 echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT"

@@ -285,6 +285,8 @@ test_success_uses_two_readiness_acks_and_one_launch_line() {
   assert_not_contains "$log" $'\x1f''pane'$'\x1f''send-text' "Herdr launch still used split send-text"
   assert_not_contains "$log" $'\x1f''pane'$'\x1f''send-keys' "Herdr launch still used split Enter"
   [ -f "$STATE/$ID.meta" ] || fail "successful Herdr spawn did not publish metadata"
+  assert_contains "$(cat "$STATE/$ID.meta")" "handoff_confirmed=1" \
+    "successful Herdr spawn did not retain its confirmed handoff evidence"
   assert_contains "$out" "spawned $ID" "successful Herdr spawn did not report success"
   [ "$(cat "$FIXTURE/herdr-state/pane-get-count")" -ge 2 ] \
     || fail "Herdr spawn accepted a transient non-worktree cwd before the real isolated root"
@@ -519,6 +521,25 @@ test_retry_allows_legacy_markerless_endpoint_only_when_dead() {
   pass "fm-spawn Herdr retry: legacy markerless recovery requires positive pane death"
 }
 
+test_retry_reclaims_confirmed_agentless_endpoint() {
+  local out first_pane_creates final_pane_creates
+  make_fixture readiness-retry-confirmed-agentless
+  out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=raw run_spawn "sh -c 'echo ok'" 2>&1) \
+    || fail "confirmed endpoint fixture failed its initial spawn: $out"
+  assert_contains "$(cat "$STATE/$ID.meta")" "handoff_confirmed=1" \
+    "confirmed endpoint fixture did not retain successful handoff evidence"
+  first_pane_creates=$(grep -c $'\x1f''tab'$'\x1f''create' "$FIXTURE/herdr.log" || true)
+  out=$(FM_FAKE_READY_ACK_LIMIT=4 FM_FAKE_HANDOFF_MODE=raw run_spawn "sh -c 'echo ok'" 2>&1) \
+    || fail "same-identity retry refused a confirmed agentless endpoint: $out"
+  final_pane_creates=$(grep -c $'\x1f''tab'$'\x1f''create' "$FIXTURE/herdr.log" || true)
+  [ "$final_pane_creates" -eq $((first_pane_creates + 1)) ] \
+    || fail "same-identity retry did not replace the confirmed agentless endpoint exactly once"
+  assert_contains "$out" "spawned $ID" \
+    "confirmed agentless endpoint retry did not complete the replacement spawn"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr retry: confirmed successful handoff permits same-identity agentless husk reclamation"
+}
+
 test_preserved_abort_metadata_is_guard_consumable() {
   local meta
   make_fixture readiness-recovery-meta
@@ -563,4 +584,5 @@ test_unqueryable_pane_preserves_recovery_metadata
 test_retry_refuses_retained_uncertain_endpoint
 test_retry_refuses_legacy_markerless_live_identityless_endpoint
 test_retry_allows_legacy_markerless_endpoint_only_when_dead
+test_retry_reclaims_confirmed_agentless_endpoint
 test_preserved_abort_metadata_is_guard_consumable
