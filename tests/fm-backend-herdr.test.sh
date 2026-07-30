@@ -1710,6 +1710,22 @@ test_handoff_process_matches_kimi_linux_argv() {
   pass "fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence"
 }
 
+test_handoff_process_matches_raw_executable_only() {
+  local json
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":71,"name":"zsh","cmdline":"-zsh"}]}}}'
+  if SHELL=/bin/bash ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json"; then
+    fail "raw handoff accepted a different pane shell merely because it differed from caller SHELL"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":72,"name":"python3","argv0":"/opt/custom-agent","argv":["/opt/custom-agent","--flag"]}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json" \
+    || fail "raw handoff rejected structurally verified requested-executable argv evidence"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":73,"name":"python3","argv0":"python3","argv":["python3",71,"custom-agent"]}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json"; then
+    fail "raw handoff accepted malformed argv evidence that merely mentioned the requested executable"
+  fi
+  pass "fm_backend_herdr_handoff_process_matches: raw handoff requires structurally verified requested-executable evidence"
+}
+
 test_parse_target() {
   ( . "$ROOT/bin/backends/herdr.sh"
     fm_backend_herdr_parse_target "default:w1:p2" || exit 1
@@ -3159,6 +3175,7 @@ test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
 test_handoff_process_matches_kimi_linux_argv
+test_handoff_process_matches_raw_executable_only
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read

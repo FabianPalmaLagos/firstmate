@@ -260,13 +260,18 @@ parse_orca_worktree_result() {
 }
 
 herdr_preserve_abort_meta() {
+  local abort_worktree
   mkdir -p "$STATE" 2>/dev/null || return 1
+  abort_worktree=${WT:-${HERDR_ABORT_WORKTREE:-}}
   if ! grep -qxF "herdr_pane_id=$HERDR_PANE_ID" "$STATE/$ID.meta" 2>/dev/null \
-     || ! grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null; then
+     || ! grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null \
+     || { [ -z "$abort_worktree" ] \
+          && ! grep -qxF 'abort_cleanup_stage=pre-worktree' "$STATE/$ID.meta" 2>/dev/null; }; then
     {
       echo "window=${T:-}"
       echo "endpoint_task_id=$ID"
-      echo "worktree=${WT:-${HERDR_ABORT_WORKTREE:-}}"
+      echo "worktree=$abort_worktree"
+      [ -n "$abort_worktree" ] || echo 'abort_cleanup_stage=pre-worktree'
       echo "project=$PROJ_ABS"
       echo "harness=$HARNESS"
       echo "kind=$KIND"
@@ -482,6 +487,14 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
+  if [ -f "$STATE/$ID.meta" ] \
+     && { grep -qxF 'abort_cleanup=failed' "$STATE/$ID.meta" 2>/dev/null \
+          || grep -qxF 'handoff_uncertain=1' "$STATE/$ID.meta" 2>/dev/null; }; then
+    echo "error: task $ID has retained endpoint metadata after uncertain Herdr ownership; reconcile it before retrying spawn" >&2
+    exit 1
+  fi
+fi
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
@@ -1665,7 +1678,11 @@ if [ "$BACKEND" = herdr ]; then
     HERDR_PROJECTION_ABORT_CLEANUP=0
   fi
   spawn_send_text_line "$T" "$HERDR_LAUNCH"
-  fm_backend_herdr_wait_launch_handoff "$T" "$HARNESS" "$HERDR_LAUNCH_WITNESS" || exit 1
+  if ! fm_backend_herdr_wait_launch_handoff "$T" "$HARNESS" "$HERDR_LAUNCH_WITNESS"; then
+    grep -qxF 'handoff_uncertain=1' "$STATE/$ID.meta" 2>/dev/null \
+      || echo 'handoff_uncertain=1' >> "$STATE/$ID.meta"
+    exit 1
+  fi
   if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
     spawn_herdr_presentation_order_lock_release
   fi

@@ -1846,9 +1846,8 @@ fm_backend_herdr_agent_matches_harness() {  # <harness> <native-agent-identity>
 }
 
 fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
-  local harness=$1 out=$2 name cmdline expected expected_shell verified=0
+  local harness=$1 out=$2 name cmdline expected verified=0
   expected=$(basename "${harness%% *}")
-  expected_shell=$(basename "${SHELL:-sh}")
   case "$harness" in
     claude*) expected=claude; verified=1 ;;
     codex*) expected=codex; verified=1 ;;
@@ -1857,6 +1856,28 @@ fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
     grok*) expected=grok; verified=1 ;;
     kimi*) expected=kimi; verified=1 ;;
   esac
+  if [ "$verified" -eq 0 ]; then
+    printf '%s' "$out" | jq -e --arg expected "$expected" '
+      .result.process_info.foreground_processes[]?
+      | [
+          (if (.name | type) == "string" then .name else empty end),
+          (if (.argv0 | type) == "string" then .argv0 else empty end),
+          (if ((.argv | type) == "array")
+                and (all(.argv[]; type == "string"))
+                and ((.argv | length) > 0)
+            then .argv[0]
+            else empty
+            end),
+          (if (.cmdline | type) == "string"
+            then (.cmdline | split(" ") | map(select(length > 0)) | .[0] // empty)
+            else empty
+            end)
+        ]
+      | map(select(length > 0) | split("/")[-1])
+      | index($expected) != null
+    ' >/dev/null 2>&1
+    return
+  fi
   while IFS=$'\t' read -r name cmdline; do
     [ -n "$name" ] || continue
     case "$expected:$name:$cmdline" in
@@ -1866,11 +1887,6 @@ fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
       pi:pi:*|pi:node:*'/pi '*|pi:node:*'/pi'|pi:node:*' pi '*) return 0 ;;
       grok:grok:*) return 0 ;;
       kimi:kimi:*|kimi:python:*kimi*|kimi:python3:*kimi*|kimi:node:*kimi*) return 0 ;;
-      *)
-        if [ "$verified" -eq 0 ] && [ "$name" != "$expected_shell" ]; then
-          return 0
-        fi
-        ;;
     esac
   done <<EOF
 $(printf '%s' "$out" | jq -r '

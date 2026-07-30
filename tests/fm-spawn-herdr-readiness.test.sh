@@ -97,6 +97,8 @@ case "$cmd $sub" in
         printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"node","cmdline":"node /opt/pi --thinking xhigh","cwd":"%s"}]}}}\n' "$cwd"
       elif [ "${FM_FAKE_HANDOFF_MODE:-raw}" = wrong-agent ]; then
         printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"node","cmdline":"node /opt/pi --thinking xhigh","cwd":"%s"}]}}}\n' "$cwd"
+      elif [ "${FM_FAKE_HANDOFF_MODE:-raw}" = raw-stale-shell ]; then
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"zsh","cmdline":"-zsh","cwd":"%s"}]}}}\n' "$cwd"
       else
         printf '{"result":{"process_info":{"foreground_processes":[{"pid":20,"name":"sh","cmdline":"sh -c fixture","cwd":"%s"}]}}}\n' "$cwd"
       fi
@@ -341,6 +343,21 @@ test_launch_handoff_failure_preserves_possible_worker_work() {
   pass "fm-spawn Herdr handoff: uncertain post-submission ownership preserves worker work and recovery metadata"
 }
 
+test_raw_handoff_must_match_requested_executable() {
+  local out
+  make_fixture readiness-raw-stale-shell
+  if out=$(SHELL=/bin/bash FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=raw-stale-shell \
+    run_spawn "custom-agent --flag" 2>&1); then
+    fail "Herdr raw handoff accepted the restored zsh merely because caller SHELL was bash"
+  fi
+  assert_contains "$out" "no custom-agent process or agent handoff appeared" \
+    "raw handoff executable mismatch was not reported"
+  [ -e "$WORKTREE/worker-uncommitted.txt" ] || fail "raw handoff mismatch did not preserve possible worker output"
+  [ "$(cat "$FIXTURE/herdr-state/task")" = 1 ] || fail "raw handoff mismatch closed the uncertain endpoint"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr raw handoff: a different pane shell cannot impersonate the requested executable"
+}
+
 test_agent_identity_must_match_requested_harness() {
   local out
   make_fixture readiness-agent-mismatch
@@ -410,8 +427,34 @@ test_unqueryable_pane_preserves_recovery_metadata() {
   meta="$STATE/$ID.meta"
   [ -f "$meta" ] || fail "unqueryable pane cleanup deleted its recovery metadata"
   assert_contains "$(cat "$meta")" "abort_cleanup=failed" "unqueryable pane metadata lacks the cleanup-failure marker"
+  assert_contains "$(cat "$meta")" "abort_cleanup_stage=pre-worktree" \
+    "pre-Treehouse cleanup record lacks its dedicated guarded-recovery stage"
   assert_contains "$(cat "$meta")" "herdr_pane_id=w1:p2" "unqueryable pane metadata lost the exact pane id"
-  pass "fm-spawn Herdr abort: only positive pane absence permits recovery-record deletion"
+  ROOT="$ROOT" META="$meta" ID="$ID" bash -c '
+    . "$ROOT/bin/fm-backend.sh"
+    fm_backend_validate_task_endpoint "$META" "$ID"
+  ' || fail "pre-Treehouse cleanup metadata was not consumable by guarded recovery"
+  pass "fm-spawn Herdr abort: pre-Treehouse uncertainty retains a guard-consumable exact endpoint record"
+}
+
+test_retry_refuses_retained_uncertain_endpoint() {
+  local out before after
+  make_fixture readiness-retry-retained
+  if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=none run_spawn pi 2>&1); then
+    fail "uncertain handoff fixture unexpectedly succeeded"
+  fi
+  [ -f "$STATE/$ID.meta" ] || fail "uncertain handoff did not retain endpoint metadata"
+  before=$(grep -c $'\x1f''tab'$'\x1f''create' "$FIXTURE/herdr.log" || true)
+  if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=raw run_spawn pi 2>&1); then
+    fail "retry proceeded while uncertain endpoint metadata remained"
+  fi
+  assert_contains "$out" "retained endpoint metadata" "retry refusal did not identify retained endpoint ownership"
+  after=$(grep -c $'\x1f''tab'$'\x1f''create' "$FIXTURE/herdr.log" || true)
+  [ "$after" -eq "$before" ] || fail "retry reached duplicate-tab creation/reclamation despite retained metadata"
+  [ "$(cat "$FIXTURE/herdr-state/task")" = 1 ] || fail "retry closed the potentially working pane"
+  [ -e "$WORKTREE/worker-uncommitted.txt" ] || fail "retry discarded possible worker output"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr retry: retained uncertain endpoint ownership refuses duplicate-pane reclamation"
 }
 
 test_preserved_abort_metadata_is_guard_consumable() {
@@ -448,9 +491,11 @@ test_readiness_uses_the_pane_shell_not_the_callers_shell
 test_first_readiness_failure_closes_only_task_pane
 test_second_readiness_failure_returns_worktree_and_closes_pane
 test_launch_handoff_failure_preserves_possible_worker_work
+test_raw_handoff_must_match_requested_executable
 test_agent_identity_must_match_requested_harness
 test_candidate_worktree_is_returned_when_cwd_discovery_then_fails
 test_unrelated_checkout_is_never_claimed_for_cleanup
 test_sibling_worktree_transient_is_not_claimed
 test_unqueryable_pane_preserves_recovery_metadata
+test_retry_refuses_retained_uncertain_endpoint
 test_preserved_abort_metadata_is_guard_consumable

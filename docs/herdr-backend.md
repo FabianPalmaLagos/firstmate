@@ -210,14 +210,17 @@ It sends the resolved worker command, `GOTMPDIR`, and a unique execution witness
 Spawn accepts native-agent evidence only when its reported identity matches the requested harness; an arbitrary agent or identity-less status is not handoff proof.
 When native identity is absent, the witness still needs matching foreground-process evidence before spawn reports success.
 Process matching accepts Herdr's verified `cmdline`, `argv0`, and string `argv` response shapes.
-A contradictory native identity is rejected rather than overridden by process evidence.
+Known harnesses retain their adapter-specific interpreter patterns, while an unverified raw launch must match the requested executable itself through structurally valid process-name or command evidence.
+A contradictory native identity or an unrelated restored pane shell is rejected rather than overridden by process evidence.
 
 Any failure after task-pane creation keeps abort cleanup armed for the ordinary flat layout until worker launch is submitted.
 Two matching Treehouse cwd samples must identify an isolated worktree top level in the requested project's Git common directory, then the execution canary must report that same physical cwd before the path becomes task-owned.
 Uncorroborated sibling-copy paths are never force-returned; closing the exact pre-launch pane lets the interactive Treehouse acquisition unwind its own copy.
 Once the worker launch line is submitted, destructive abort cleanup is disarmed because failed handoff confirmation cannot prove that the worker has not changed files.
-The already-published endpoint metadata remains for supervised cleanup and carries the exact task binding required by guarded teardown.
+A failed handoff marks the already-published exact endpoint as uncertain, and another spawn with that task id refuses until the record is reconciled instead of reclaiming an identity-less pane as a husk.
+The retained metadata remains for supervised cleanup and carries the exact task binding required by guarded teardown.
 Pre-launch cleanup closes the exact task pane and deletes recovery data only after Herdr positively reports that pane absent; unreadable state preserves the recovery record.
+When that uncertainty occurs before Treehouse acquires a task worktree, an explicit pre-worktree abort stage lets guarded teardown validate the empty worktree identity only for the exact bound Herdr endpoint and cleanup-failure shape.
 Successful pre-launch cleanup also removes Grok and Kimi task-scoped private authorization artifacts with their state pointers.
 Response-derived tab and pane ids survive failed partial-create or husk-replacement cleanup until exact absence is verified.
 A tab-list response proves absence only when every entry has the expected object and nonempty string id shape.

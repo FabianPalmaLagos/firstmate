@@ -90,7 +90,14 @@ test_invalid_endpoint_records_refuse_before_mutation() {
     "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
   assert_refused_without_mutation "$dir" "$id" "duplicate task binding"
 
-  pass "fm-teardown: missing, empty, malformed, ambiguous, and task-mismatched endpoints refuse before every mutation or runtime call"
+  dir=$(make_case forged-pre-worktree)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=isolated:fm-$id" "endpoint_task_id=$id" "worktree=" \
+    "abort_cleanup_stage=pre-worktree" "abort_cleanup=failed" \
+    "project=$dir/project" "kind=scout"
+  assert_refused_without_mutation "$dir" "$id" "non-Herdr pre-worktree marker"
+
+  pass "fm-teardown: missing, empty, malformed, ambiguous, task-mismatched, and backend-inconsistent endpoints refuse before every mutation or runtime call"
 }
 
 test_supported_backend_endpoint_records_validate() {
@@ -116,6 +123,14 @@ test_supported_backend_endpoint_records_validate() {
     "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
     "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" "herdr_pane_id=w1:p2"
   fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" || fail "valid Herdr endpoint refused"
+
+  id=herdr-pre-worktree
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p3" "endpoint_task_id=$id" "worktree=" "project=$dir/project" \
+    "kind=scout" "backend=herdr" "abort_cleanup_stage=pre-worktree" "abort_cleanup=failed" \
+    "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t3" "herdr_pane_id=w1:p3"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" \
+    || fail "valid pre-worktree Herdr abort endpoint refused"
 
   id=zellij-task
   fm_write_meta "$dir/home/state/$id.meta" \

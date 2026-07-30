@@ -210,6 +210,10 @@ ok - fm-spawn Herdr abort: preserved recovery metadata is directly consumable by
 ok - fm_backend_herdr_create_task: malformed tab entries preserve recovery ownership instead of proving absence
 ok - fm-spawn Herdr abort: Kimi token state and private authorization are retired together
 ok - fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence
+ok - fm_backend_herdr_handoff_process_matches: raw handoff requires structurally verified requested-executable evidence
+ok - fm-spawn Herdr raw handoff: a different pane shell cannot impersonate the requested executable
+ok - fm-spawn Herdr abort: pre-Treehouse uncertainty retains a guard-consumable exact endpoint record
+ok - fm-spawn Herdr retry: retained uncertain endpoint ownership refuses duplicate-pane reclamation
 ok - fm-spawn: projected presentation lock spans witnessed worker handoff
 ok - fm-spawn: presentation lock preserves concurrent focus order through handoff
 ```
