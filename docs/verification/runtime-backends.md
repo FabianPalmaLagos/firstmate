@@ -75,7 +75,7 @@ Both recorded runtime identities now classify the exact `pi-launcher` foreground
 
 Backend applicability was reviewed across every spawn adapter.
 Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identities for recovery-grade liveness.
-Herdr still uses native registered-agent state for recovery-grade liveness, while spawn handoff now has a bounded process-name fallback only when native identity is absent.
+Herdr still uses native registered-agent state for recovery-grade liveness, while spawn handoff uses bounded process evidence when native identity is absent or the requested launch is a custom wrapper.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
 The structural multi-row composer reader, Kimi pointer-delivery path, and OpenCode 1.18.4 busy-queue behavior are pinned by:
@@ -212,8 +212,11 @@ ok - fm-spawn Herdr abort: Kimi token state and private authorization are retire
 ok - fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence
 ok - fm_backend_herdr_handoff_process_matches: raw handoff requires structurally verified requested-executable evidence
 ok - fm-spawn Herdr raw handoff: a different pane shell cannot impersonate the requested executable
+ok - fm-spawn Herdr raw handoff: native identity does not suppress exact wrapper process evidence
 ok - fm-spawn Herdr abort: pre-Treehouse uncertainty retains a guard-consumable exact endpoint record
 ok - fm-spawn Herdr retry: retained uncertain endpoint ownership refuses duplicate-pane reclamation
+ok - fm-spawn Herdr retry: a legacy markerless live identity-less endpoint refuses recovery
+ok - fm-spawn Herdr retry: legacy markerless recovery requires positive pane death
 ok - fm-spawn: projected presentation lock spans witnessed worker handoff
 ok - fm-spawn: presentation lock preserves concurrent focus order through handoff
 ```

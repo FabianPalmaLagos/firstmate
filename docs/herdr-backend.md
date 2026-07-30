@@ -209,6 +209,7 @@ The canary is never retyped when acknowledgement is absent.
 It sends the resolved worker command, `GOTMPDIR`, and a unique execution witness in one safely quoted line.
 Spawn accepts native-agent evidence only when its reported identity matches the requested harness; an arbitrary agent or identity-less status is not handoff proof.
 When native identity is absent, the witness still needs matching foreground-process evidence before spawn reports success.
+Raw or custom wrapper launches require matching foreground-process evidence even when Herdr reports the wrapper's underlying supported native agent.
 Process matching accepts Herdr's verified `cmdline`, `argv0`, and string `argv` response shapes.
 Known harnesses retain their adapter-specific interpreter patterns, while an unverified raw launch must match the requested executable itself through structurally valid process-name or command evidence.
 A contradictory native identity or an unrelated restored pane shell is rejected rather than overridden by process evidence.
@@ -238,7 +239,8 @@ No Herdr-specific copy of that protocol exists.
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
-Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
+Without retained task-bound endpoint metadata, create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
+Retained Herdr endpoint metadata blocks a same-id retry unless a legacy markerless record validates structurally and its exact pane is positively dead; `agent_not_found`, live, unknown, or invalid records require reconciliation.
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
