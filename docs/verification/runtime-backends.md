@@ -105,7 +105,7 @@ tests/fm-backend-cmux.test.sh
 Bounded output from the incident regression:
 
 ```text
-ok - fm-teardown: missing, empty, malformed, ambiguous, and task-mismatched endpoints refuse before every mutation or runtime call
+ok - fm-teardown: missing, empty, malformed, ambiguous, task-mismatched, and backend-inconsistent endpoints refuse before every mutation or runtime call
 ok - cleanup identity: valid tmux, Herdr, Zellij, Orca, and cmux records validate while every empty backend target refuses
 ok - tmux backend: direct empty target returns nonzero without invoking tmux
 ok - process cleanup: creation-time PID identity removes only the exact child and preserves the control child
@@ -233,7 +233,9 @@ Observed recovery-identity evidence:
 ```text
 ok - herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed
 ok - herdr projection teardown preserves recovery identity when the shared focus lock times out
-ok - already-dead Herdr projection retires only after exact absence proof
+ok - marked Herdr projections with no journal preserve live or unknown endpoints without generic cleanup
+ok - marked Herdr projection without a journal retires only after exact absence proof
+ok - forced secondmate projected-child cleanup guards a marked endpoint without a journal
 ok - fm-teardown: pre-worktree Herdr records retire only after positive exact-pane absence
 ```
 

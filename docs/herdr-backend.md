@@ -153,6 +153,7 @@ herdr_session=<session>
 herdr_workspace_id=<workspace-id>
 herdr_tab_id=<tab-id>
 herdr_pane_id=<pane-id>
+herdr_projection=projected  # projected endpoints only
 ```
 
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
