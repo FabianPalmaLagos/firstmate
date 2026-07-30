@@ -1947,7 +1947,14 @@ EOF
 }
 
 fm_backend_herdr_wait_launch_handoff() {  # <target> <harness> <witness-token>
-  local target=$1 harness=$2 token=$3 polls sleep_s session pane i cap out agent witness=0
+  local target=$1 harness=$2 token=$3 polls sleep_s session pane i cap out agent diagnostic witness=0
+  if diagnostic=$(fm_backend_herdr_native_harness_identity "$harness"); then
+    :
+  elif diagnostic=$(fm_backend_herdr_raw_executable "$harness"); then
+    :
+  else
+    diagnostic=raw-command
+  fi
   fm_backend_herdr_parse_target "$target" || {
     echo "error: invalid herdr target '$target' for launch handoff" >&2
     return 1
@@ -1982,7 +1989,7 @@ fm_backend_herdr_wait_launch_handoff() {  # <target> <harness> <witness-token>
   if [ "$witness" -eq 0 ]; then
     echo "error: herdr launch text in pane $pane was not acknowledged as executed" >&2
   else
-    echo "error: herdr launch executed in pane $pane but no $harness process or agent handoff appeared" >&2
+    echo "error: herdr launch executed in pane $pane but no $diagnostic process or agent handoff appeared" >&2
   fi
   return 1
 }

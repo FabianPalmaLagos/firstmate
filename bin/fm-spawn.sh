@@ -318,12 +318,6 @@ herdr_spawn_abort_cleanup() {
   HERDR_ABORT_CLEANUP=0
   [ "$HERDR_ABORT_METADATA_RETIRE_ALLOWED" = 1 ] || cleanup_failed=1
   cleanup_wt=${WT:-${HERDR_ABORT_WORKTREE:-}}
-  if [ -n "$cleanup_wt" ] && [ -d "$cleanup_wt" ] && [ "$(real_path_or_raw "$cleanup_wt")" != "${PROJ_ABS_REAL:-}" ]; then
-    if ! return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$cleanup_wt" ) 2>&1 ); then
-      echo "error: Herdr spawn abort could not return worktree $cleanup_wt: $return_out" >&2
-      cleanup_failed=1
-    fi
-  fi
   if [ -n "${HERDR_PANE_ID:-}" ]; then
     [ -n "${T:-}" ] || T="$HERDR_SES:$HERDR_PANE_ID"
     if [ "${HERDR_PROJECTED:-0}" -ne 1 ]; then
@@ -337,6 +331,15 @@ herdr_spawn_abort_cleanup() {
   elif [ -n "${HERDR_TAB_ID:-}" ]; then
     if ! fm_backend_herdr_close_created_tab_exact \
       "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_TAB_ID"; then
+      cleanup_failed=1
+    fi
+  fi
+  if [ "$cleanup_failed" -eq 0 ] \
+     && [ -n "$cleanup_wt" ] \
+     && [ -d "$cleanup_wt" ] \
+     && [ "$(real_path_or_raw "$cleanup_wt")" != "${PROJ_ABS_REAL:-}" ]; then
+    if ! return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$cleanup_wt" ) 2>&1 ); then
+      echo "error: Herdr spawn abort could not return worktree $cleanup_wt: $return_out" >&2
       cleanup_failed=1
     fi
   fi

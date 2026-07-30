@@ -1485,19 +1485,23 @@ test_projected_abort_cleanup_holds_presentation_lock() {
 }
 
 test_projected_abort_lock_timeout_preserves_endpoint_metadata() {
-  local dir state function_source rc
+  local dir state worktree returned function_source rc
   dir="$TMP_ROOT/projection-abort-lock-timeout"; state="$dir/state"
-  mkdir -p "$state" "$dir/project"
+  worktree="$dir/worktree"; returned="$dir/returned"
+  mkdir -p "$state" "$dir/project" "$worktree"
   function_source=$(sed -n '/^herdr_preserve_abort_meta()/,/^trap spawn_abort_cleanup EXIT/p' "$ROOT/bin/fm-spawn.sh" | sed '$d')
-  if ROOT="$ROOT" STATE="$state" FUNCTION_SOURCE="$function_source" PROJECT="$dir/project" bash -c '
+  if ROOT="$ROOT" STATE="$state" FUNCTION_SOURCE="$function_source" PROJECT="$dir/project" \
+    WORKTREE="$worktree" RETURNED="$returned" bash -c '
     eval "$FUNCTION_SOURCE"
     spawn_herdr_presentation_order_lock_acquire() { return 1; }
     fm_backend_herdr_projection_cleanup_exact() { return 99; }
     fm_backend_herdr_pane_agent_state() { printf dead; }
     fm_lock_release() { return 0; }
+    real_path_or_raw() { printf "%s" "$1"; }
+    treehouse() { : > "$RETURNED"; }
     ID=projection-timeout
     T=fmtest:w9:p2
-    WT=
+    WT=$WORKTREE
     PROJ_ABS=$PROJECT
     HARNESS=pi
     KIND=scout
@@ -1530,9 +1534,12 @@ test_projected_abort_lock_timeout_preserves_endpoint_metadata() {
   fi
   [ "$rc" -ne 0 ] || fail "projection lock timeout reported successful authoritative cleanup"
   [ -f "$state/projection-timeout.meta" ] || fail "projection lock timeout retired authoritative endpoint metadata"
+  [ ! -e "$returned" ] || fail "projection lock timeout returned the authoritative recovery worktree"
   assert_contains "$(cat "$state/projection-timeout.meta")" "abort_cleanup=failed" \
     "projection lock timeout did not mark retained endpoint metadata"
-  pass "fm-spawn: projection lock timeout preserves authoritative endpoint metadata"
+  assert_contains "$(cat "$state/projection-timeout.meta")" "worktree=$worktree" \
+    "projection lock timeout did not preserve the authoritative recovery worktree identity"
+  pass "fm-spawn: projection lock timeout preserves authoritative metadata and worktree"
 }
 
 test_projection_reclaim_refusal_matrix_is_non_mutating() {

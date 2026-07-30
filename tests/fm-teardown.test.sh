@@ -1327,6 +1327,9 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}'
     ;;
   "tab focus")
+    if [ "${FM_FAKE_HERDR_FOCUS_FAIL:-0}" = 1 ]; then
+      exit 1
+    fi
     : > "${FM_FAKE_HERDR_RESTORED:?}"
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}'
     ;;
@@ -1376,11 +1379,35 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
     || fail "unconfirmed task-pane close incorrectly retired authoritative metadata"
   [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
     || fail "unconfirmed task-pane close incorrectly retired the presentation journal"
-  assert_grep "exact projected Herdr pane absence is unconfirmed" "$case_dir/stderr" \
+  assert_grep "projected Herdr pane cleanup failed" "$case_dir/stderr" \
     "unconfirmed projected close did not explain why metadata was preserved"
   assert_not_contains "$(cat "$log")" "workspace close" \
     "unconfirmed projected close must not escalate to workspace cleanup"
   pass "herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed"
+}
+
+test_herdr_projection_teardown_preserves_metadata_when_focus_restore_fails() {
+  local case_dir log closed restored rc
+  case_dir=$(make_case herdr-projection-focus-restore-failure)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  set +e
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_FOCUS_FAIL=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "herdr-projection-focus-restore-failure: teardown must fail when exact focus restoration fails"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "focus-restoration failure incorrectly retired authoritative metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "focus-restoration failure incorrectly retired the presentation journal"
+  assert_grep "projected Herdr pane cleanup failed" "$case_dir/stderr" \
+    "focus-restoration failure did not explain why metadata was preserved"
+  pass "herdr projection teardown preserves metadata when exact focus restoration fails"
 }
 
 test_herdr_uncorrelated_projection_refuses_focus_unsafe_close() {
@@ -1431,6 +1458,7 @@ test_local_only_force_overrides_unpushed
 test_herdr_teardown_clears_escalation_marker
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_projection_teardown_preserves_metadata_when_focus_restore_fails
 test_herdr_uncorrelated_projection_refuses_focus_unsafe_close
 test_projected_child_cleanup_uses_guarded_projection_path
 test_squash_merged_branch_deleted_allows

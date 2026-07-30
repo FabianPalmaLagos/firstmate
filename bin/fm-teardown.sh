@@ -179,7 +179,7 @@ require_pre_worktree_herdr_endpoint_absent() {
 
 cleanup_projected_herdr_endpoint() {
   local meta=$1 id=$2 state_dir=$3 target=$4 journal session workspace pane pane_state
-  local correlated=0 focus_lock= focus_lock_held=0 focus_lock_attempt=0
+  local close_rc=0 correlated=0 focus_lock= focus_lock_held=0 focus_lock_attempt=0
   journal="$state_dir/$id.herdr-presentation"
   { [ -e "$journal" ] || [ -L "$journal" ]; } || return 2
   fm_backend_source herdr || return 1
@@ -207,9 +207,17 @@ cleanup_projected_herdr_endpoint() {
       echo "REFUSED: herdr presentation focus lock unavailable for $id; preserving task state." >&2
       return 1
     fi
-    fm_backend_herdr_projection_close_pane_focus_preserving \
-      "$session" "$pane" 2>/dev/null || true
+    if fm_backend_herdr_projection_close_pane_focus_preserving \
+      "$session" "$pane" 2>/dev/null; then
+      :
+    else
+      close_rc=$?
+    fi
     fm_lock_release "$focus_lock" || true
+    if [ "$close_rc" -ne 0 ]; then
+      echo "REFUSED: projected Herdr pane cleanup failed for $id (status=$close_rc); preserving task state." >&2
+      return 1
+    fi
   fi
   pane_state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
   if [ "$pane_state" != dead ]; then

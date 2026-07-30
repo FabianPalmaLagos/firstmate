@@ -358,7 +358,7 @@ test_raw_handoff_must_match_requested_executable() {
     run_spawn "custom-agent --flag" 2>&1); then
     fail "Herdr raw handoff accepted the restored zsh merely because caller SHELL was bash"
   fi
-  assert_contains "$out" "no custom-agent --flag process or agent handoff appeared" \
+  assert_contains "$out" "no custom-agent process or agent handoff appeared" \
     "raw handoff executable mismatch was not reported"
   [ -e "$WORKTREE/worker-uncommitted.txt" ] || fail "raw handoff mismatch did not preserve possible worker output"
   [ "$(cat "$FIXTURE/herdr-state/task")" = 1 ] || fail "raw handoff mismatch closed the uncertain endpoint"
@@ -394,6 +394,23 @@ test_prefixed_raw_handoff_carries_complete_launch_specification() {
     rm -rf "/tmp/fm-$ID"
   done
   pass "fm-spawn Herdr raw handoff: env, exec, and command prefixes retain the complete launch specification"
+}
+
+test_raw_handoff_diagnostic_redacts_environment_secrets() {
+  local out
+  make_fixture readiness-raw-secret-redaction
+  if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=raw-stale-shell \
+    run_spawn "env API_TOKEN=secret-value custom-agent --flag" 2>&1); then
+    fail "secret-redaction fixture unexpectedly matched the wrong pane process"
+  fi
+  assert_contains "$out" "no custom-agent process or agent handoff appeared" \
+    "raw handoff failure did not identify the safe effective executable"
+  assert_not_contains "$out" "secret-value" \
+    "raw handoff failure leaked an environment secret"
+  assert_not_contains "$out" "API_TOKEN" \
+    "raw handoff failure leaked an environment assignment name"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr raw handoff: diagnostics redact the complete launch specification"
 }
 
 test_agent_identity_must_match_requested_harness() {
@@ -597,6 +614,7 @@ test_launch_handoff_failure_preserves_possible_worker_work
 test_raw_handoff_must_match_requested_executable
 test_raw_handoff_uses_process_evidence_with_native_identity
 test_prefixed_raw_handoff_carries_complete_launch_specification
+test_raw_handoff_diagnostic_redacts_environment_secrets
 test_agent_identity_must_match_requested_harness
 test_candidate_worktree_is_returned_when_cwd_discovery_then_fails
 test_unrelated_checkout_is_never_claimed_for_cleanup
