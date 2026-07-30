@@ -119,6 +119,26 @@ test_invalid_endpoint_records_refuse_before_mutation() {
     "project=$dir/project" "kind=scout"
   assert_refused_without_mutation "$dir" "$id" "non-Herdr pre-worktree marker"
 
+  dir=$(make_case duplicate-projection-marker)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
+    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" \
+    "herdr_pane_id=w1:p2" "herdr_projection=projected" "herdr_projection=projected"
+  assert_refused_without_mutation "$dir" "$id" "ambiguous Herdr projection marker"
+
+  dir=$(make_case malformed-projection-marker)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
+    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" \
+    "herdr_pane_id=w1:p2" "herdr_projection=flat"
+  assert_refused_without_mutation "$dir" "$id" "malformed Herdr projection marker"
+
+  dir=$(make_case backend-inconsistent-projection-marker)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=isolated:fm-$id" "endpoint_task_id=$id" "worktree=$dir/worktree" \
+    "project=$dir/project" "herdr_projection=projected"
+  assert_refused_without_mutation "$dir" "$id" "backend-inconsistent Herdr projection marker"
+
   pass "fm-teardown: missing, empty, malformed, ambiguous, task-mismatched, and backend-inconsistent endpoints refuse before every mutation or runtime call"
 }
 
@@ -143,7 +163,8 @@ test_supported_backend_endpoint_records_validate() {
   id=herdr-task
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
-    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" "herdr_pane_id=w1:p2"
+    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" \
+    "herdr_pane_id=w1:p2" "herdr_projection=projected"
   fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" || fail "valid Herdr endpoint refused"
 
   id=herdr-pre-worktree

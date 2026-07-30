@@ -61,6 +61,9 @@ A secondmate agent itself always stays in its ordinary parent workspace; only ch
 An absent or unconverged setting keeps the flat default.
 
 Presentation is a best-effort visual projection, never task ownership or lifecycle authority.
+Every successfully projected endpoint records exactly one `herdr_projection=projected` marker in its authoritative task metadata, independently of the non-authoritative presentation journal.
+Teardown uses that marker to require exact-pane absence proof before retiring metadata or an acquired worktree even when the journal is missing, malformed, ambiguous, or uncorrelated.
+Without a correlated journal, teardown never attempts a generic close and retires a marked projection only after the exact pane is positively absent.
 Only a fresh task with neither metadata nor an existing presentation journal is eligible for projected creation.
 Firstmate atomically publishes a three-field version 1 journal containing a random 128-bit base64url token before asking Herdr to create anything.
 After the new workspace converges to one exact task endpoint beneath one exact parent, the journal advances to a version 2 binding that records the physical home, named session, endpoint, parent, and immutable expected labels.

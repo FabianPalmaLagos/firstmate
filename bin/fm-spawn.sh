@@ -266,6 +266,8 @@ herdr_preserve_abort_meta() {
   abort_worktree=${WT:-${HERDR_ABORT_WORKTREE:-}}
   if ! grep -qxF "herdr_pane_id=$HERDR_PANE_ID" "$STATE/$ID.meta" 2>/dev/null \
      || ! grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null \
+     || { [ "${HERDR_PROJECTED:-0}" -eq 1 ] \
+          && ! grep -qxF 'herdr_projection=projected' "$STATE/$ID.meta" 2>/dev/null; } \
      || { [ -z "$abort_worktree" ] \
           && ! grep -qxF 'abort_cleanup_stage=pre-worktree' "$STATE/$ID.meta" 2>/dev/null; }; then
     {
@@ -286,6 +288,7 @@ herdr_preserve_abort_meta() {
       echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
       echo "herdr_tab_id=$HERDR_TAB_ID"
       echo "herdr_pane_id=$HERDR_PANE_ID"
+      [ "${HERDR_PROJECTED:-0}" -ne 1 ] || echo "herdr_projection=projected"
       if [ "$KIND" = secondmate ]; then
         echo "home=${PROJ_ABS:-$FIRSTMATE_HOME}"
         echo "projects=${SECONDMATE_PROJECTS:-}"
@@ -1640,6 +1643,7 @@ META_WINDOW=$T
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
+    [ "$HERDR_PROJECTED" -ne 1 ] || echo "herdr_projection=projected"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"

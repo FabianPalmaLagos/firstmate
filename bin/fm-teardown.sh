@@ -37,12 +37,14 @@
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
-# A Herdr presentation journal never authorizes cleanup. Teardown still closes
-# only the exact task pane from ordinary endpoint metadata and never calls
+# A Herdr presentation journal never authorizes cleanup. Authoritative endpoint
+# metadata marks projected tasks independently of that journal. Teardown still
+# closes only the exact task pane from ordinary endpoint metadata and never calls
 # `workspace close`. Before returning its worktree or retiring authoritative
-# recovery state, projected teardown requires the presentation lock and positive
-# proof that the exact pane is absent. Lock timeout, focus-restoration failure,
-# or unconfirmed absence preserves the worktree, hooks, metadata, and journal.
+# recovery state, projected teardown requires positive proof that the exact pane
+# is absent. A correlated journal additionally authorizes the presentation-locked,
+# focus-preserving close. Lock timeout, focus-restoration failure, or unconfirmed
+# absence preserves the worktree, hooks, metadata, and journal.
 # A pre-worktree Herdr abort record likewise remains the sole recovery endpoint
 # until the same exact-pane absence proof succeeds.
 # The non-authoritative journal is retired only when read-only token correlation
@@ -184,14 +186,18 @@ require_pre_worktree_herdr_endpoint_absent() {
 
 cleanup_projected_herdr_endpoint() {
   local meta=$1 id=$2 state_dir=$3 target=$4 journal session workspace pane pane_state
+  local marked=0 journal_present=0
   local close_rc=0 correlated=0 focus_lock='' focus_lock_held=0 focus_lock_attempt=0
   journal="$state_dir/$id.herdr-presentation"
-  { [ -e "$journal" ] || [ -L "$journal" ]; } || return 2
+  grep -qxF 'herdr_projection=projected' "$meta" 2>/dev/null && marked=1
+  { [ -e "$journal" ] || [ -L "$journal" ]; } && journal_present=1
+  [ "$marked" -eq 1 ] || [ "$journal_present" -eq 1 ] || return 2
   fm_backend_source herdr || return 1
   session=$(meta_value "$meta" herdr_session)
   workspace=$(meta_value "$meta" herdr_workspace_id)
   pane=$(meta_value "$meta" herdr_pane_id)
-  if [ "$target" = "$session:$pane" ] \
+  if [ "$journal_present" -eq 1 ] \
+     && [ "$target" = "$session:$pane" ] \
      && fm_backend_herdr_projection_endpoint_matches_journal \
        "$session" "$workspace" "$journal" "$id"; then
     correlated=1
@@ -232,7 +238,7 @@ cleanup_projected_herdr_endpoint() {
   fi
   if [ "$correlated" -eq 1 ]; then
     rm -f "$journal"
-  else
+  elif [ "$journal_present" -eq 1 ]; then
     echo "warning: herdr presentation journal for $id remains quarantined after exact pane absence was confirmed" >&2
   fi
 }
@@ -1068,7 +1074,8 @@ cleanup_firstmate_home_children() {
       fi
     fi
     if [ "$child_backend" = herdr ] \
-       && { [ -e "$sub_state/$child_id.herdr-presentation" ] \
+       && { grep -qxF 'herdr_projection=projected' "$child_meta" 2>/dev/null \
+            || [ -e "$sub_state/$child_id.herdr-presentation" ] \
             || [ -L "$sub_state/$child_id.herdr-presentation" ]; }; then
       cleanup_projected_herdr_endpoint \
         "$child_meta" "$child_id" "$sub_state" "$child_t" || return 1
@@ -1198,7 +1205,8 @@ fi
 
 HERDR_PROJECTED_ENDPOINT_CLEANED=0
 if [ "$BACKEND" = herdr ] \
-   && { [ -e "$STATE/$ID.herdr-presentation" ] \
+   && { grep -qxF 'herdr_projection=projected' "$META" 2>/dev/null \
+        || [ -e "$STATE/$ID.herdr-presentation" ] \
         || [ -L "$STATE/$ID.herdr-presentation" ]; }; then
   cleanup_projected_herdr_endpoint "$META" "$ID" "$STATE" "$T" || exit 1
   HERDR_PROJECTED_ENDPOINT_CLEANED=1

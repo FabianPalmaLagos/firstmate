@@ -598,11 +598,14 @@ test_preserved_abort_metadata_is_guard_consumable() {
     HERDR_WORKSPACE_ID=w1
     HERDR_TAB_ID=w1:t2
     HERDR_PANE_ID=w1:p2
+    HERDR_PROJECTED=1
     herdr_preserve_abort_meta
     . "$ROOT/bin/fm-backend.sh"
     fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID"
   ' || fail "preserved Herdr abort metadata was not consumable by the guarded endpoint validator"
   assert_contains "$(cat "$meta")" "endpoint_task_id=$ID" "preserved abort metadata omitted its endpoint binding"
+  assert_contains "$(cat "$meta")" "herdr_projection=projected" \
+    "preserved projected abort metadata omitted its authoritative projection marker"
   pass "fm-spawn Herdr abort: preserved recovery metadata is directly consumable by guarded cleanup"
 }
 

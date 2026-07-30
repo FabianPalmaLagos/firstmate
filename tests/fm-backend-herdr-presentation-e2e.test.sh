@@ -408,6 +408,7 @@ normalize_meta() {  # <meta>
     -e 's|^herdr_workspace_id=.*$|herdr_workspace_id=<herdr-container-id>|' \
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
+    -e '/^herdr_projection=projected$/d' \
     "$1"
 }
 
@@ -527,6 +528,10 @@ assert_raw_presentation_mutations_preserved_since "$SHAPE_FOCUS_AUDIT_START" "pr
 ON_META="$TMP_ROOT/on.meta"
 cp "$HOME_DIR/state/shape.meta" "$ON_META"
 ON_WT=$(remember_meta_worktree "$ON_META")
+[ "$(grep -c '^herdr_projection=projected$' "$ON_META")" -eq 1 ] \
+  || fail "projected spawn did not publish exactly one authoritative projection marker"
+[ "$(grep -c '^herdr_projection=' "$OFF_META" || true)" -eq 0 ] \
+  || fail "flag-off flat spawn published a projection marker"
 cmp -s "$TMP_ROOT/off-treehouse.log" "$TREEHOUSE_CALL_LOG" \
   || fail "Treehouse command sequence changed between flag-off and projected spawns"
 JOURNAL="$HOME_DIR/state/shape.herdr-presentation"
