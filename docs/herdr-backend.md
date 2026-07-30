@@ -240,7 +240,7 @@ No Herdr-specific copy of that protocol exists.
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
 Without retained task-bound endpoint metadata, create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
-Retained Herdr endpoint metadata blocks a same-id retry unless a legacy markerless record validates structurally and its exact pane is positively dead; `agent_not_found`, live, unknown, or invalid records require reconciliation.
+Retained Herdr endpoint metadata with an exact `endpoint_task_id=` binding blocks a same-id retry unless a markerless record validates structurally and its exact pane is positively dead; explicit uncertainty markers always block, while `agent_not_found`, live, unknown, or invalid bound records require reconciliation.
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.

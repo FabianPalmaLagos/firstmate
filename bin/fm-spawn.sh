@@ -495,7 +495,8 @@ if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
     exit 1
   fi
   if [ -f "$STATE/$ID.meta" ] \
-     && grep -qxF 'backend=herdr' "$STATE/$ID.meta" 2>/dev/null; then
+     && grep -qxF 'backend=herdr' "$STATE/$ID.meta" 2>/dev/null \
+     && grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null; then
     if ! fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" \
        || ! fm_backend_source herdr \
        || ! fm_backend_herdr_parse_target "$FM_BACKEND_VALIDATED_TARGET"; then
