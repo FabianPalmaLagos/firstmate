@@ -1410,29 +1410,49 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 }
 
 test_herdr_projection_teardown_retains_recovery_identity_when_focus_lock_times_out() {
-  local case_dir log closed restored treehouse_called lock rc
+  local case_dir log closed restored treehouse_called lock_ready lock_release
+  local lock_holder_pid lock_wait rc
   case_dir=$(make_case herdr-projection-focus-lock-timeout)
   write_meta "$case_dir" local-only ship
   configure_herdr_projection_teardown_case "$case_dir"
   configure_projection_treehouse_probe "$case_dir"
   log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
-  treehouse_called="$case_dir/treehouse-called"; : > "$log"
+  treehouse_called="$case_dir/treehouse-called"
+  lock_ready="$case_dir/lock-ready"; lock_release="$case_dir/lock-release"; : > "$log"
   : > "$case_dir/wt/.fm-grok-turnend"
 
   # Hold the same machine-private session lock that projected spawn/cleanup
   # share, so teardown exercises its bounded acquisition refusal end to end.
-  # shellcheck source=bin/fm-backend.sh
-  . "$ROOT/bin/fm-backend.sh"
-  fm_backend_source herdr
-  lock=$(
+  ROOT="$ROOT" READY="$lock_ready" RELEASE="$lock_release" \
     FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
-      FM_FAKE_HERDR_RESTORED="$restored" PATH="$case_dir/fakebin:$PATH" \
-      fm_backend_herdr_presentation_session_lock_path fmtest
-  ) || fail "focus-lock-timeout fixture could not resolve the shared presentation lock"
-  # shellcheck source=bin/fm-wake-lib.sh
-  . "$ROOT/bin/fm-wake-lib.sh"
-  fm_lock_try_acquire "$lock" \
-    || fail "focus-lock-timeout fixture could not acquire the shared presentation lock"
+    FM_FAKE_HERDR_RESTORED="$restored" PATH="$case_dir/fakebin:$PATH" bash -c '
+      . "$ROOT/bin/fm-backend.sh"
+      . "$ROOT/bin/fm-wake-lib.sh"
+      fm_backend_source herdr
+      lock=$(fm_backend_herdr_presentation_session_lock_path fmtest) || exit 1
+      fm_lock_try_acquire "$lock" || exit 2
+      : > "$READY"
+      poll=0
+      while [ ! -e "$RELEASE" ] && [ "$poll" -lt 1000 ]; do
+        sleep 0.01
+        poll=$((poll + 1))
+      done
+      [ -e "$RELEASE" ] || exit 3
+      fm_lock_release "$lock"
+    ' &
+  lock_holder_pid=$!
+  lock_wait=0
+  while [ ! -e "$lock_ready" ] \
+    && kill -0 "$lock_holder_pid" 2>/dev/null \
+    && [ "$lock_wait" -lt 1000 ]; do
+    sleep 0.01
+    lock_wait=$((lock_wait + 1))
+  done
+  if [ ! -e "$lock_ready" ]; then
+    : > "$lock_release"
+    wait "$lock_holder_pid" 2>/dev/null || true
+    fail "focus-lock-timeout fixture could not acquire the shared presentation lock"
+  fi
 
   set +e
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
@@ -1441,7 +1461,9 @@ test_herdr_projection_teardown_retains_recovery_identity_when_focus_lock_times_o
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
-  fm_lock_release "$lock"
+  : > "$lock_release"
+  wait "$lock_holder_pid" \
+    || fail "focus-lock-timeout fixture did not release the shared presentation lock"
 
   expect_code 1 "$rc" \
     "herdr-projection-focus-lock-timeout: teardown must refuse without the shared presentation lock"

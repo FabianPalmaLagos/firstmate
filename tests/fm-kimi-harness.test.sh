@@ -688,6 +688,7 @@ test_herdr_abort_cleanup_removes_kimi_registry_artifacts() {
     eval "$(sed -n "/^herdr_spawn_abort_cleanup()/,/^}/p" "$ROOT/bin/fm-spawn.sh")"
     ID=task
     HERDR_ABORT_CLEANUP=1
+    HERDR_ABORT_METADATA_RETIRE_ALLOWED=1
     HERDR_ABORT_WORKTREE=
     WT=
     T=
