@@ -214,7 +214,7 @@ cleanup_projected_herdr_endpoint() {
       close_rc=$?
     fi
     fm_lock_release "$focus_lock" || true
-    if [ "$close_rc" -ne 0 ]; then
+    if [ "$close_rc" -eq 2 ]; then
       echo "REFUSED: projected Herdr pane cleanup failed for $id (status=$close_rc); preserving task state." >&2
       return 1
     fi
@@ -1190,6 +1190,14 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+HERDR_PROJECTED_ENDPOINT_CLEANED=0
+if [ "$BACKEND" = herdr ] \
+   && { [ -e "$STATE/$ID.herdr-presentation" ] \
+        || [ -L "$STATE/$ID.herdr-presentation" ]; }; then
+  cleanup_projected_herdr_endpoint "$META" "$ID" "$STATE" "$T" || exit 1
+  HERDR_PROJECTED_ENDPOINT_CLEANED=1
+fi
+
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -1232,7 +1240,9 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   }
 fi
 
-if [ "$BACKEND" = herdr ]; then
+if [ "$BACKEND" = herdr ] && [ "$HERDR_PROJECTED_ENDPOINT_CLEANED" = 1 ]; then
+  :
+elif [ "$BACKEND" = herdr ]; then
   if cleanup_projected_herdr_endpoint "$META" "$ID" "$STATE" "$T"; then
     :
   else
