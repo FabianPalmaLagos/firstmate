@@ -457,6 +457,52 @@ test_retry_refuses_retained_uncertain_endpoint() {
   pass "fm-spawn Herdr retry: retained uncertain endpoint ownership refuses duplicate-pane reclamation"
 }
 
+test_retry_refuses_legacy_markerless_live_identityless_endpoint() {
+  local out before after meta
+  make_fixture readiness-retry-legacy-live
+  if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=none run_spawn pi 2>&1); then
+    fail "legacy uncertain-handoff fixture unexpectedly succeeded"
+  fi
+  meta="$STATE/$ID.meta"
+  sed -i.bak '/^handoff_uncertain=1$/d' "$meta"
+  rm -f "$meta.bak"
+  before=$(grep -c $'\x1f''tab'$'\x1f''create' "$FIXTURE/herdr.log" || true)
+  if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=raw run_spawn pi 2>&1); then
+    fail "retry proceeded while a legacy markerless identity-less endpoint remained live"
+  fi
+  assert_contains "$out" "retained legacy Herdr endpoint" \
+    "legacy markerless retry refusal did not identify retained endpoint ownership"
+  assert_contains "$out" "no-agent" \
+    "legacy markerless retry did not classify the live identity-less pane"
+  after=$(grep -c $'\x1f''tab'$'\x1f''create' "$FIXTURE/herdr.log" || true)
+  [ "$after" -eq "$before" ] || fail "legacy markerless retry reached duplicate-tab reclamation"
+  [ "$(cat "$FIXTURE/herdr-state/task")" = 1 ] || fail "legacy markerless retry closed the possibly working pane"
+  [ -e "$WORKTREE/worker-uncommitted.txt" ] || fail "legacy markerless retry discarded possible worker output"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr retry: a legacy markerless live identity-less endpoint refuses recovery"
+}
+
+test_retry_allows_legacy_markerless_endpoint_only_when_dead() {
+  local out meta
+  make_fixture readiness-retry-legacy-dead
+  if out=$(FM_FAKE_READY_ACK_LIMIT=2 FM_FAKE_HANDOFF_MODE=none run_spawn pi 2>&1); then
+    fail "legacy dead-endpoint fixture unexpectedly succeeded"
+  fi
+  meta="$STATE/$ID.meta"
+  sed -i.bak '/^handoff_uncertain=1$/d' "$meta"
+  rm -f "$meta.bak"
+  printf '0\n' > "$FIXTURE/herdr-state/task"
+  printf '0\n' > "$FIXTURE/herdr-state/launched"
+  : > "$FIXTURE/herdr-state/output"
+  out=$(FM_FAKE_READY_ACK_LIMIT=4 FM_FAKE_HANDOFF_MODE=pi run_spawn pi 2>&1) \
+    || fail "retry refused a legacy markerless endpoint positively proven dead: $out"
+  assert_contains "$out" "spawned $ID" \
+    "dead legacy markerless endpoint did not permit recovery"
+  [ "$(cat "$FIXTURE/herdr-state/task")" = 1 ] || fail "dead legacy markerless recovery did not create a replacement pane"
+  rm -rf "/tmp/fm-$ID"
+  pass "fm-spawn Herdr retry: legacy markerless recovery requires positive pane death"
+}
+
 test_preserved_abort_metadata_is_guard_consumable() {
   local meta
   make_fixture readiness-recovery-meta
@@ -498,4 +544,6 @@ test_unrelated_checkout_is_never_claimed_for_cleanup
 test_sibling_worktree_transient_is_not_claimed
 test_unqueryable_pane_preserves_recovery_metadata
 test_retry_refuses_retained_uncertain_endpoint
+test_retry_refuses_legacy_markerless_live_identityless_endpoint
+test_retry_allows_legacy_markerless_endpoint_only_when_dead
 test_preserved_abort_metadata_is_guard_consumable

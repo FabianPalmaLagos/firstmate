@@ -1834,12 +1834,12 @@ EOF
 fm_backend_herdr_agent_matches_harness() {  # <harness> <native-agent-identity>
   local harness=$1 agent=$2 expected
   case "$harness" in
-    claude*) expected=claude ;;
-    codex*) expected=codex ;;
-    opencode*) expected=opencode ;;
-    pi*) expected=pi ;;
-    grok*) expected=grok ;;
-    kimi*) expected=kimi ;;
+    claude) expected=claude ;;
+    codex) expected=codex ;;
+    opencode) expected=opencode ;;
+    pi|pi-signed) expected=pi ;;
+    grok) expected=grok ;;
+    kimi) expected=kimi ;;
     *) return 1 ;;
   esac
   [ "$agent" = "$expected" ]
@@ -1849,12 +1849,12 @@ fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
   local harness=$1 out=$2 name cmdline expected verified=0
   expected=$(basename "${harness%% *}")
   case "$harness" in
-    claude*) expected=claude; verified=1 ;;
-    codex*) expected=codex; verified=1 ;;
-    opencode*) expected=opencode; verified=1 ;;
-    pi*) expected=pi; verified=1 ;;
-    grok*) expected=grok; verified=1 ;;
-    kimi*) expected=kimi; verified=1 ;;
+    claude) expected=claude; verified=1 ;;
+    codex) expected=codex; verified=1 ;;
+    opencode) expected=opencode; verified=1 ;;
+    pi|pi-signed) expected=pi; verified=1 ;;
+    grok) expected=grok; verified=1 ;;
+    kimi) expected=kimi; verified=1 ;;
   esac
   if [ "$verified" -eq 0 ]; then
     printf '%s' "$out" | jq -e --arg expected "$expected" '

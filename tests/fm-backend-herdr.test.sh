@@ -1723,7 +1723,17 @@ test_handoff_process_matches_raw_executable_only() {
   if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json"; then
     fail "raw handoff accepted malformed argv evidence that merely mentioned the requested executable"
   fi
-  pass "fm_backend_herdr_handoff_process_matches: raw handoff requires structurally verified requested-executable evidence"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":74,"name":"node","cmdline":"node /opt/codex --flag","argv0":"node","argv":["node","/opt/codex","--flag"]}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "codex-helper --flag" "$1"' _ "$json"; then
+    fail "prefixed raw executable inherited the built-in Codex process matcher"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":75,"name":"codex-helper","cmdline":"/opt/codex-helper --flag"}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "codex-helper --flag" "$1"' _ "$json" \
+    || fail "prefixed raw executable did not use structural requested-executable evidence"
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_agent_matches_harness codex-helper codex'; then
+    fail "prefixed raw executable inherited the built-in Codex native identity"
+  fi
+  pass "Herdr raw handoff requires exact requested-executable evidence for prefixed names"
 }
 
 test_parse_target() {

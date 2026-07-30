@@ -494,6 +494,21 @@ if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
     echo "error: task $ID has retained endpoint metadata after uncertain Herdr ownership; reconcile it before retrying spawn" >&2
     exit 1
   fi
+  if [ -f "$STATE/$ID.meta" ] \
+     && grep -qxF 'backend=herdr' "$STATE/$ID.meta" 2>/dev/null; then
+    if ! fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" \
+       || ! fm_backend_source herdr \
+       || ! fm_backend_herdr_parse_target "$FM_BACKEND_VALIDATED_TARGET"; then
+      echo "error: task $ID has legacy Herdr endpoint metadata that cannot be proven dead; reconcile it before retrying spawn" >&2
+      exit 1
+    fi
+    LEGACY_HERDR_ENDPOINT_STATE=$(fm_backend_herdr_pane_agent_state \
+      "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+    if [ "$LEGACY_HERDR_ENDPOINT_STATE" != dead ]; then
+      echo "error: task $ID has a retained legacy Herdr endpoint that is $LEGACY_HERDR_ENDPOINT_STATE; reconcile it before retrying spawn" >&2
+      exit 1
+    fi
+  fi
 fi
 PROJ=
 ARG3=
