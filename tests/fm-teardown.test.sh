@@ -1409,6 +1409,59 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   pass "herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed"
 }
 
+test_herdr_projection_teardown_retains_recovery_identity_when_focus_lock_times_out() {
+  local case_dir log closed restored treehouse_called lock rc
+  case_dir=$(make_case herdr-projection-focus-lock-timeout)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  configure_projection_treehouse_probe "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
+  treehouse_called="$case_dir/treehouse-called"; : > "$log"
+  : > "$case_dir/wt/.fm-grok-turnend"
+
+  # Hold the same machine-private session lock that projected spawn/cleanup
+  # share, so teardown exercises its bounded acquisition refusal end to end.
+  # shellcheck source=bin/fm-backend.sh
+  . "$ROOT/bin/fm-backend.sh"
+  fm_backend_source herdr
+  lock=$(
+    FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+      FM_FAKE_HERDR_RESTORED="$restored" PATH="$case_dir/fakebin:$PATH" \
+      fm_backend_herdr_presentation_session_lock_path fmtest
+  ) || fail "focus-lock-timeout fixture could not resolve the shared presentation lock"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$ROOT/bin/fm-wake-lib.sh"
+  fm_lock_try_acquire "$lock" \
+    || fail "focus-lock-timeout fixture could not acquire the shared presentation lock"
+
+  set +e
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_TREEHOUSE_CALLED="$treehouse_called" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  fm_lock_release "$lock"
+
+  expect_code 1 "$rc" \
+    "herdr-projection-focus-lock-timeout: teardown must refuse without the shared presentation lock"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "focus-lock timeout incorrectly retired authoritative metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "focus-lock timeout incorrectly retired the presentation journal"
+  assert_grep "herdr presentation focus lock unavailable" "$case_dir/stderr" \
+    "focus-lock timeout did not explain why metadata was preserved"
+  [ ! -e "$treehouse_called" ] \
+    || fail "focus-lock timeout returned the authoritative recovery worktree"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "focus-lock timeout changed the recovery worktree branch"
+  [ -e "$case_dir/wt/.fm-grok-turnend" ] \
+    || fail "focus-lock timeout removed recovery worktree hooks"
+  assert_not_contains "$(cat "$log")" "pane close" \
+    "focus-lock timeout attempted a projection close without serialization"
+  pass "herdr projection teardown preserves recovery identity when the shared focus lock times out"
+}
+
 test_herdr_projection_teardown_preserves_metadata_when_focus_restore_fails() {
   local case_dir log closed restored treehouse_called rc
   case_dir=$(make_case herdr-projection-focus-restore-failure)
@@ -1519,6 +1572,7 @@ test_local_only_force_overrides_unpushed
 test_herdr_teardown_clears_escalation_marker
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_projection_teardown_retains_recovery_identity_when_focus_lock_times_out
 test_herdr_projection_teardown_preserves_metadata_when_focus_restore_fails
 test_herdr_already_dead_projection_retires_after_absence_probe
 test_herdr_uncorrelated_projection_refuses_focus_unsafe_close

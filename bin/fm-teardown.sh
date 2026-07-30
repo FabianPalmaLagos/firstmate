@@ -39,9 +39,14 @@
 # an Orca target from ambient CLI state.
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
 # only the exact task pane from ordinary endpoint metadata and never calls
-# `workspace close`. It retires the non-authoritative journal only when a
-# read-only token correlation agrees with that endpoint and pane closure is
-# confirmed. Otherwise the journal stays quarantined for manual inspection.
+# `workspace close`. Before returning its worktree or retiring authoritative
+# recovery state, projected teardown requires the presentation lock and positive
+# proof that the exact pane is absent. Lock timeout, focus-restoration failure,
+# or unconfirmed absence preserves the worktree, hooks, metadata, and journal.
+# A pre-worktree Herdr abort record likewise remains the sole recovery endpoint
+# until the same exact-pane absence proof succeeds.
+# The non-authoritative journal is retired only when read-only token correlation
+# agrees with that endpoint; otherwise it stays quarantined for manual inspection.
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
 # if Herdr's last-pane cleanup focuses an unrelated neighboring workspace.

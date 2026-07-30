@@ -85,7 +85,8 @@ The worker remains on the ordinary flat or Herdr-current-order path.
 Normal task metadata remains the sole endpoint authority after creation.
 Cleanup closes only the exact recorded task pane and never calls `workspace close`.
 Herdr can move focus when closing the last pane of a non-focused projected workspace, so projected cleanup runs under the same session lock, captures the exact active tab, refuses to delete the active tab, closes the exact task pane, and restores only the exact prior tab when needed.
-If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.
+Projected teardown returns the worktree and retires task metadata, hooks, and the journal only after Herdr positively confirms that exact pane absent.
+A presentation-lock timeout, ambiguous snapshot or pane identity, unconfirmed close, or failed focus restoration refuses teardown and preserves the complete authoritative recovery identity for a safe retry.
 
 Recovery is deliberately conservative and presentation-only.
 An existing journal suppresses another projected create.
@@ -221,7 +222,8 @@ Once the worker launch line is submitted, destructive abort cleanup is disarmed 
 A failed handoff marks the already-published exact endpoint as uncertain, and another spawn with that task id refuses until the record is reconciled instead of reclaiming an identity-less pane as a husk.
 The retained metadata remains for supervised cleanup and carries the exact task binding required by guarded teardown.
 Pre-launch cleanup closes the exact task pane and deletes recovery data only after Herdr positively reports that pane absent; unreadable state preserves the recovery record.
-When that uncertainty occurs before Treehouse acquires a task worktree, an explicit pre-worktree abort stage lets guarded teardown validate the empty worktree identity only for the exact bound Herdr endpoint and cleanup-failure shape.
+When that uncertainty occurs before Treehouse acquires a task worktree, an explicit pre-worktree abort stage lets guarded teardown accept an empty worktree identity only for the exact bound Herdr endpoint and cleanup-failure shape.
+That sole endpoint record remains authoritative until guarded teardown positively confirms the exact pane absent; a live, unreadable, or otherwise unconfirmed pane refuses every retirement mutation.
 Successful pre-launch cleanup also removes Grok and Kimi task-scoped private authorization artifacts with their state pointers.
 Response-derived tab and pane ids survive failed partial-create or husk-replacement cleanup until exact absence is verified.
 A tab-list response proves absence only when every entry has the expected object and nonempty string id shape.

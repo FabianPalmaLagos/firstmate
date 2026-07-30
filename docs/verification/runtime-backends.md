@@ -221,6 +221,22 @@ ok - fm-spawn: projected presentation lock spans witnessed worker handoff
 ok - fm-spawn: presentation lock preserves concurrent focus order through handoff
 ```
 
+The guarded teardown corrections were verified on 2026-07-30 with:
+
+```sh
+bash tests/fm-teardown.test.sh
+bash tests/fm-teardown-endpoint-safety.test.sh
+```
+
+Observed recovery-identity evidence:
+
+```text
+ok - herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed
+ok - herdr projection teardown preserves recovery identity when the shared focus lock times out
+ok - already-dead Herdr projection retires only after exact absence proof
+ok - fm-teardown: pre-worktree Herdr records retire only after positive exact-pane absence
+```
+
 ### Per-home and presentation topology
 
 Per-home behavior is owned by:
