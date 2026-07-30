@@ -184,7 +184,7 @@ require_pre_worktree_herdr_endpoint_absent() {
 
 cleanup_projected_herdr_endpoint() {
   local meta=$1 id=$2 state_dir=$3 target=$4 journal session workspace pane pane_state
-  local close_rc=0 correlated=0 focus_lock= focus_lock_held=0 focus_lock_attempt=0
+  local close_rc=0 correlated=0 focus_lock='' focus_lock_held=0 focus_lock_attempt=0
   journal="$state_dir/$id.herdr-presentation"
   { [ -e "$journal" ] || [ -L "$journal" ]; } || return 2
   fm_backend_source herdr || return 1
@@ -197,6 +197,7 @@ cleanup_projected_herdr_endpoint() {
     correlated=1
   fi
   if [ "$correlated" -eq 1 ]; then
+    # shellcheck source=bin/fm-wake-lib.sh
     . "$SCRIPT_DIR/fm-wake-lib.sh"
     if focus_lock=$(fm_backend_herdr_presentation_session_lock_path "$session"); then
       while [ "$focus_lock_attempt" -lt 50 ]; do

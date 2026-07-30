@@ -1953,7 +1953,7 @@ fm_backend_herdr_wait_launch_handoff() {  # <target> <harness> <witness-token>
   elif diagnostic=$(fm_backend_herdr_raw_executable "$harness"); then
     :
   else
-    diagnostic=raw-command
+    diagnostic='raw-command'
   fi
   fm_backend_herdr_parse_target "$target" || {
     echo "error: invalid herdr target '$target' for launch handoff" >&2

@@ -1555,7 +1555,7 @@ test_projected_child_cleanup_uses_guarded_projection_path() {
   body=$(sed -n '/^cleanup_firstmate_home_children()/,/^remove_secondmate_registry_entry()/p' \
     "$ROOT/bin/fm-teardown.sh")
   guarded_line=$(printf '%s\n' "$body" | grep -n 'cleanup_projected_herdr_endpoint' | head -1 | cut -d: -f1)
-  generic_line=$(printf '%s\n' "$body" | grep -n 'elif \[ -n "\$child_t" \]' | head -1 | cut -d: -f1)
+  generic_line=$(printf '%s\n' "$body" | grep -nF "elif [ -n \"\$child_t\" ]" | head -1 | cut -d: -f1)
   [ -n "$guarded_line" ] && [ -n "$generic_line" ] && [ "$guarded_line" -lt "$generic_line" ] \
     || fail "forced secondmate projected-child cleanup does not route through the guarded projection path"
   pass "forced secondmate projected-child cleanup routes before generic endpoint kill"
