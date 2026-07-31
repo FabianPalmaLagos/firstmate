@@ -673,6 +673,37 @@ test_kimi_bordered_prompt_needs_no_override() {
   pass "composer classifier: kimi's existing bordered > shape is already safe without an override"
 }
 
+test_herdr_abort_cleanup_removes_kimi_registry_artifacts() {
+  local dir state home token
+  dir="$TMP_ROOT/herdr-abort-kimi"
+  state="$dir/state"
+  home="$dir/home"
+  token=fm.abcdefghijkl
+  mkdir -p "$state" "$home/.kimi-code/fm-turn-end.d"
+  printf '%s\n' "$token" > "$state/task.kimi-turnend-token"
+  printf '/tmp/task.turn-ended\n' > "$home/.kimi-code/fm-turn-end.d/$token"
+  ROOT="$ROOT" STATE="$state" HOME="$home" bash -c '
+    eval "$(sed -n "/^herdr_remove_abort_grok_auth()/,/^}/p" "$ROOT/bin/fm-spawn.sh")"
+    eval "$(sed -n "/^herdr_remove_abort_kimi_auth()/,/^}/p" "$ROOT/bin/fm-spawn.sh")"
+    eval "$(sed -n "/^herdr_spawn_abort_cleanup()/,/^}/p" "$ROOT/bin/fm-spawn.sh")"
+    ID=task
+    HERDR_ABORT_CLEANUP=1
+    HERDR_ABORT_METADATA_RETIRE_ALLOWED=1
+    HERDR_ABORT_WORKTREE=
+    WT=
+    T=
+    HERDR_PANE_ID=
+    HERDR_TAB_ID=
+    TASK_TMP=
+    PROJ_ABS=
+    PROJ_ABS_REAL=
+    herdr_spawn_abort_cleanup
+  ' || fail "Herdr abort cleanup failed while removing a Kimi token"
+  assert_absent "$state/task.kimi-turnend-token" "Herdr abort cleanup left Kimi token state"
+  assert_absent "$home/.kimi-code/fm-turn-end.d/$token" "Herdr abort cleanup left Kimi private authorization"
+  pass "fm-spawn Herdr abort: Kimi token state and private authorization are retired together"
+}
+
 test_tracked_files_have_no_user_absolute_paths
 test_existing_launch_templates_are_byte_pinned
 test_kimi_hook_install_is_surgical_idempotent_and_removable
@@ -692,3 +723,4 @@ test_kimi_session_lock_identity
 test_kimi_busy_signature_is_scoped_to_spinner_lines
 test_watcher_scopes_moon_spinner_to_recorded_kimi_task
 test_kimi_bordered_prompt_needs_no_override
+test_herdr_abort_cleanup_removes_kimi_registry_artifacts

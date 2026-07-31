@@ -271,6 +271,7 @@ unit_herdr_partial_create_recovery() {
     . "$1"
     fm_backend_source() { return 0; }
     fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_wait_shell_ready() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
         printf %s '\''truncated'\''
@@ -326,6 +327,7 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
     . "$1"
     fm_backend_source() { return 0; }
     fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_wait_shell_ready() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
         printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
@@ -344,6 +346,111 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
     pass "herdr run failure: unconfirmed exact id remains reconcilable"
   else
     fail "herdr run failure: unconfirmed exact id was discarded"
+  fi
+  rm -rf "$st"
+}
+
+unit_herdr_delayed_shell_readiness_precedes_one_launch() {
+  local st calls run_count
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-delayed-shell.XXXXXX")
+  calls="$st/calls"
+  mkdir -p "$calls"
+  printf '0\n' > "$calls/process-count"
+  : > "$calls/output"
+  : > "$calls/runs"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_LAUNCH_ENTRY=/bin/true \
+    FM_BACKEND_HERDR_READY_POLLS=4 FM_BACKEND_HERDR_READY_STABLE_POLLS=2 \
+    FM_BACKEND_HERDR_READY_POLL_SLEEP=0 CALLS="$calls" bash -c '
+    . "$1"
+    fm_backend_source herdr || exit 1
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "workspace create")
+          printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
+          ;;
+        "pane process-info")
+          n=$(( $(cat "$CALLS/process-count") + 1 ))
+          printf "%s\n" "$n" > "$CALLS/process-count"
+          if [ "$n" -eq 1 ]; then
+            name=node; pid=10
+          else
+            name=zsh; pid=20
+          fi
+          printf '\''{"result":{"process_info":{"foreground_processes":[{"pid":%s,"name":"%s","cwd":"%s"}]}}}\n'\'' "$pid" "$name" "$FM_HOME"
+          ;;
+        "pane run")
+          printf "%s\n" "$5" >> "$CALLS/runs"
+          case "$5" in
+            *"__fm_ready_afk_"*)
+              token=$(printf "%s" "$5" | grep -Eo "__fm_ready_afk_[A-Za-z0-9_]+__" | head -1)
+              sum=$(printf "%s\n" "$(cd "$FM_HOME" && pwd -P)" | cksum | cut -d " " -f1)
+              printf "%s\n%s\n" "$token" "$sum" >> "$CALLS/output"
+              ;;
+          esac
+          ;;
+        "pane read") cat "$CALLS/output" ;;
+        "pane get") printf %s '\''{"result":{"pane":{"pane_id":"pane-exact"}}}'\'' ;;
+      esac
+      return 0
+    }
+    fm_backend_source() { return 0; }
+    fm_afk_launch_create_herdr lab:captain herdr
+  ' _ "$LAUNCH" || fail "Herdr delayed-shell away launch did not succeed"
+  run_count=$(wc -l < "$calls/runs" | tr -d '[:space:]')
+  if [ "$run_count" = 2 ] \
+     && sed -n '1p' "$calls/runs" | grep -Fq '__fm_ready_afk_' \
+     && sed -n '2p' "$calls/runs" | grep -Fq 'exec env ' \
+     && [ "$(cat "$calls/process-count")" -ge 3 ]; then
+    pass "herdr away launch: delayed shell executes one readiness canary before exactly one daemon launch"
+  else
+    fail "herdr away launch: launch raced shell readiness or retried probabilistically"
+  fi
+  rm -rf "$st"
+}
+
+unit_herdr_readiness_failure_cleans_exact_and_rolls_back() {
+  local st close_log
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-readiness-fail.XXXXXX")
+  close_log="$st/closes"
+  : > "$close_log"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_LAUNCH_ENTRY=/bin/true \
+    FM_SUPERVISOR_TARGET=lab:captain FM_SUPERVISOR_BACKEND=herdr \
+    FM_BACKEND_HERDR_READY_POLLS=2 FM_BACKEND_HERDR_READY_STABLE_POLLS=2 \
+    FM_BACKEND_HERDR_READY_POLL_SLEEP=0 CLOSE_LOG="$close_log" bash -c '
+    . "$1"
+    fm_backend_source herdr || exit 1
+    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_cli() {
+      case "$2 $3" in
+        "workspace create")
+          printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
+          return 0
+          ;;
+        "pane process-info")
+          printf %s '\''{"result":{"process_info":{"foreground_processes":[]}}}'\''
+          return 0
+          ;;
+        "pane close")
+          printf "%s\n" "$4" >> "$CLOSE_LOG"
+          return 0
+          ;;
+        "pane get")
+          printf %s '\''{"error":{"code":"pane_not_found"}}'\'' >&2
+          return 1
+          ;;
+      esac
+      return 1
+    }
+    fm_backend_source() { return 0; }
+    ! fm_afk_launch_start
+  ' _ "$LAUNCH" || fail "Herdr away readiness failure fixture did not fail safely"
+  if [ "$(cat "$close_log")" = pane-exact ] \
+     && [ ! -e "$st/state/.afk-daemon-terminal" ] \
+     && [ ! -e "$st/state/.afk" ]; then
+    pass "herdr away launch: readiness failure closes only the exact owned pane and rolls back away state"
+  else
+    fail "herdr away launch: readiness failure leaked ownership or away state"
   fi
   rm -rf "$st"
 }
@@ -871,6 +978,8 @@ unit_signal_exits_with_lock_cleanup
 unit_herdr_partial_create_recovery
 unit_herdr_error_with_exact_ids_closes_exact
 unit_herdr_run_failure_preserves_unconfirmed_record
+unit_herdr_delayed_shell_readiness_precedes_one_launch
+unit_herdr_readiness_failure_cleans_exact_and_rolls_back
 unit_record_failure_closes_terminal
 unit_readiness_failure_rolls_back_terminal
 unit_readiness_failure_preserves_unconfirmed_record

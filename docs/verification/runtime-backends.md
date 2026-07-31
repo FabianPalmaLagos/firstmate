@@ -75,7 +75,7 @@ Both recorded runtime identities now classify the exact `pi-launcher` foreground
 
 Backend applicability was reviewed across every spawn adapter.
 Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identities for recovery-grade liveness.
-Herdr uses native registered-agent state and needs no process-name branch.
+Herdr still uses native registered-agent state for recovery-grade liveness, while spawn handoff uses bounded process evidence when native identity is absent or the requested launch is a custom wrapper.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
 The structural multi-row composer reader, Kimi pointer-delivery path, and OpenCode 1.18.4 busy-queue behavior are pinned by:
@@ -105,7 +105,7 @@ tests/fm-backend-cmux.test.sh
 Bounded output from the incident regression:
 
 ```text
-ok - fm-teardown: missing, empty, malformed, ambiguous, and task-mismatched endpoints refuse before every mutation or runtime call
+ok - fm-teardown: missing, empty, malformed, ambiguous, task-mismatched, and backend-inconsistent endpoints refuse before every mutation or runtime call
 ok - cleanup identity: valid tmux, Herdr, Zellij, Orca, and cmux records validate while every empty backend target refuses
 ok - tmux backend: direct empty target returns nonzero without invoking tmux
 ok - process cleanup: creation-time PID identity removes only the exact child and preserves the control child
@@ -120,9 +120,9 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 16 on macOS aarch64, with earlier 0.7.4, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
+The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier protocol-16, protocol-14, 0.7.4, and 0.7.3 evidence retained where they define current behavior or fallbacks.
 
-Core read-only probes:
+The retained protocol-16 core read-only probes were:
 
 ```sh
 herdr --version
@@ -172,6 +172,72 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 ```
 
 Observed guarantee: a restored no-agent tab was replaced create-before-close, while a registered live agent caused refusal.
+
+### Spawn readiness
+
+The execution-acknowledged Pi spawn path ran on 2026-07-29 against Herdr 0.7.5 protocol 17:
+
+```sh
+FM_HERDR_PI_SPAWN_E2E=1 \
+  tests/fm-spawn-pi-herdr-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - real Pi/Herdr: auto-detected spawn waited through both delayed shells, started Pi, processed the brief, and cleaned the task
+ok - real Pi/tmux control: equivalent isolated launch processed the brief and cleaned the task
+ok - real Pi spawn E2E: isolated tmux server and named Herdr lab removed; default Herdr session unchanged
+```
+
+The deterministic cleanup, identity, worktree-ownership, partial-create, and witnessed-handoff boundaries are pinned by `tests/fm-spawn-herdr-readiness.test.sh`, `tests/fm-backend-herdr.test.sh`, and `tests/fm-kimi-harness.test.sh`.
+
+The active safety counterexamples and corrections were verified on 2026-07-29 with:
+
+```sh
+bash tests/fm-spawn-herdr-readiness.test.sh
+bash tests/fm-backend-herdr.test.sh
+bash tests/fm-kimi-harness.test.sh
+```
+
+Observed correction evidence:
+
+```text
+ok - fm-spawn Herdr readiness: execution acknowledgement follows the pane process, not caller SHELL
+ok - fm-spawn Herdr handoff: uncertain post-submission ownership preserves worker work and recovery metadata
+ok - fm-spawn Herdr ownership: repeated sibling-worktree transients cannot grant cleanup or launch authority
+ok - fm-spawn Herdr abort: preserved recovery metadata is directly consumable by guarded cleanup
+ok - fm_backend_herdr_create_task: malformed tab entries preserve recovery ownership instead of proving absence
+ok - fm-spawn Herdr abort: Kimi token state and private authorization are retired together
+ok - fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence
+ok - fm_backend_herdr_handoff_process_matches: raw handoff requires structurally verified requested-executable evidence
+ok - fm-spawn Herdr raw handoff: a different pane shell cannot impersonate the requested executable
+ok - fm-spawn Herdr raw handoff: native identity does not suppress exact wrapper process evidence
+ok - fm-spawn Herdr abort: pre-Treehouse uncertainty retains a guard-consumable exact endpoint record
+ok - fm-spawn Herdr retry: retained uncertain endpoint ownership refuses duplicate-pane reclamation
+ok - fm-spawn Herdr retry: a legacy markerless live identity-less endpoint refuses recovery
+ok - fm-spawn Herdr retry: legacy markerless recovery requires positive pane death
+ok - fm-spawn: projected presentation lock spans witnessed worker handoff
+ok - fm-spawn: presentation lock preserves concurrent focus order through handoff
+```
+
+The guarded teardown corrections were verified on 2026-07-30 with:
+
+```sh
+bash tests/fm-teardown.test.sh
+bash tests/fm-teardown-endpoint-safety.test.sh
+```
+
+Observed recovery-identity evidence:
+
+```text
+ok - herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed
+ok - herdr projection teardown preserves recovery identity when the shared focus lock times out
+ok - marked Herdr projections with no journal preserve live or unknown endpoints without generic cleanup
+ok - marked Herdr projection without a journal retires only after exact absence proof
+ok - forced secondmate projected-child cleanup guards a marked endpoint without a journal
+ok - fm-teardown: pre-worktree Herdr records retire only after positive exact-pane absence
+```
 
 ### Per-home and presentation topology
 
@@ -277,7 +343,22 @@ FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 ```
 
 Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
-The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
+
+The dedicated daemon-terminal path ran on 2026-07-29 against Herdr 0.7.5 with:
+
+```sh
+bash tests/fm-afk-launch.test.sh
+```
+
+Observed readiness and rollback evidence:
+
+```text
+ok - herdr away launch: delayed shell executes one readiness canary before exactly one daemon launch
+ok - herdr away launch: readiness failure closes only the exact owned pane and rolls back away state
+ok - herdr e2e: captain tab pane count unchanged after start (no split)
+ok - herdr e2e: daemon workspace removed by exact id on stop
+ok - tmux e2e: captain window pane count unchanged after start (no split-window)
+```
 
 ## Zellij
 

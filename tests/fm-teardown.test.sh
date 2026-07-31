@@ -1278,7 +1278,8 @@ configure_herdr_projection_teardown_case() {  # <case-dir>
     'herdr_session=fmtest' \
     'herdr_workspace_id=w1' \
     'herdr_tab_id=w1:t2' \
-    'herdr_pane_id=w1:p2' >> "$case_dir/state/task-x1.meta"
+    'herdr_pane_id=w1:p2' \
+    'herdr_projection=projected' >> "$case_dir/state/task-x1.meta"
   printf '%s\n' \
     'version=1' \
     'task_id=task-x1' \
@@ -1317,7 +1318,9 @@ case "${1:-} ${2:-}" in
     : > "${FM_FAKE_HERDR_CLOSED:?}"
     ;;
   "pane get")
-    if [ -e "${FM_FAKE_HERDR_CLOSED:?}" ]; then
+    if [ -e "${FM_FAKE_HERDR_CLOSED:?}" ] \
+       || { [ -n "${FM_FAKE_HERDR_PANE_DEAD:-}" ] \
+            && [ -e "$FM_FAKE_HERDR_PANE_DEAD" ]; }; then
       printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
       exit 1
     fi
@@ -1327,16 +1330,33 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}'
     ;;
   "tab focus")
+    if [ "${FM_FAKE_HERDR_FOCUS_FAIL:-0}" = 1 ]; then
+      exit 1
+    fi
     : > "${FM_FAKE_HERDR_RESTORED:?}"
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}'
     ;;
   "agent get")
-    printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2
-    exit 1
+    case "${FM_FAKE_HERDR_AGENT_STATE:-no-agent}" in
+      live) printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}' ;;
+      unknown) printf '%s\n' '{"error":{"code":"internal_error"}}' >&2; exit 1 ;;
+      *) printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2; exit 1 ;;
+    esac
     ;;
 esac
 SH
   chmod +x "$case_dir/fakebin/herdr"
+}
+
+configure_projection_treehouse_probe() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf 'treehouse %s\n' "$*" >> "${FM_FAKE_HERDR_LOG:?}"
+: > "${FM_FAKE_TREEHOUSE_CALLED:?}"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
 }
 
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close() {
@@ -1359,22 +1379,270 @@ test_herdr_projection_teardown_retires_journal_only_after_confirmed_close() {
 }
 
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
-  local case_dir log closed restored
+  local case_dir log closed restored treehouse_called rc
   case_dir=$(make_case herdr-projection-unconfirmed-close)
   write_meta "$case_dir" local-only ship
   configure_herdr_projection_teardown_case "$case_dir"
-  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+  configure_projection_treehouse_probe "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
+  treehouse_called="$case_dir/treehouse-called"; : > "$log"
+  : > "$case_dir/wt/.fm-grok-turnend"
 
+  set +e
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" FM_FAKE_HERDR_CLOSE_FAIL=1 \
-    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
-    || fail "herdr-projection-unconfirmed-close: teardown should preserve best-effort endpoint semantics"
+    FM_FAKE_TREEHOUSE_CALLED="$treehouse_called" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "herdr-projection-unconfirmed-close: teardown must refuse without exact pane absence"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "unconfirmed task-pane close incorrectly retired authoritative metadata"
   [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
     || fail "unconfirmed task-pane close incorrectly retired the presentation journal"
-  assert_grep "close could not be confirmed" "$case_dir/stderr" \
-    "unconfirmed projected close did not explain why the journal was retained"
+  assert_grep "exact projected Herdr pane absence is unconfirmed" "$case_dir/stderr" \
+    "unconfirmed projected close did not explain why metadata was preserved"
+  [ ! -e "$treehouse_called" ] \
+    || fail "unconfirmed projected close returned the authoritative recovery worktree"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "unconfirmed projected close changed the recovery worktree branch"
+  [ -e "$case_dir/wt/.fm-grok-turnend" ] \
+    || fail "unconfirmed projected close removed recovery worktree hooks"
   assert_not_contains "$(cat "$log")" "workspace close" \
     "unconfirmed projected close must not escalate to workspace cleanup"
-  pass "herdr projection teardown retains the stale journal and attempts no workspace cleanup when exact-pane close is unconfirmed"
+  pass "herdr projection teardown preserves metadata and journal when exact-pane close is unconfirmed"
+}
+
+test_herdr_projection_teardown_retains_recovery_identity_when_focus_lock_times_out() {
+  local case_dir log closed restored treehouse_called lock_ready lock_release
+  local lock_holder_pid lock_wait rc
+  case_dir=$(make_case herdr-projection-focus-lock-timeout)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  configure_projection_treehouse_probe "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
+  treehouse_called="$case_dir/treehouse-called"
+  lock_ready="$case_dir/lock-ready"; lock_release="$case_dir/lock-release"; : > "$log"
+  : > "$case_dir/wt/.fm-grok-turnend"
+
+  # Hold the same machine-private session lock that projected spawn/cleanup
+  # share, so teardown exercises its bounded acquisition refusal end to end.
+  ROOT="$ROOT" READY="$lock_ready" RELEASE="$lock_release" \
+    FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_RESTORED="$restored" PATH="$case_dir/fakebin:$PATH" bash -c '
+      . "$ROOT/bin/fm-backend.sh"
+      . "$ROOT/bin/fm-wake-lib.sh"
+      fm_backend_source herdr
+      lock=$(fm_backend_herdr_presentation_session_lock_path fmtest) || exit 1
+      fm_lock_try_acquire "$lock" || exit 2
+      : > "$READY"
+      poll=0
+      while [ ! -e "$RELEASE" ] && [ "$poll" -lt 1000 ]; do
+        sleep 0.01
+        poll=$((poll + 1))
+      done
+      [ -e "$RELEASE" ] || exit 3
+      fm_lock_release "$lock"
+    ' &
+  lock_holder_pid=$!
+  lock_wait=0
+  while [ ! -e "$lock_ready" ] \
+    && kill -0 "$lock_holder_pid" 2>/dev/null \
+    && [ "$lock_wait" -lt 1000 ]; do
+    sleep 0.01
+    lock_wait=$((lock_wait + 1))
+  done
+  if [ ! -e "$lock_ready" ]; then
+    : > "$lock_release"
+    wait "$lock_holder_pid" 2>/dev/null || true
+    fail "focus-lock-timeout fixture could not acquire the shared presentation lock"
+  fi
+
+  set +e
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_TREEHOUSE_CALLED="$treehouse_called" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  : > "$lock_release"
+  wait "$lock_holder_pid" \
+    || fail "focus-lock-timeout fixture did not release the shared presentation lock"
+
+  expect_code 1 "$rc" \
+    "herdr-projection-focus-lock-timeout: teardown must refuse without the shared presentation lock"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "focus-lock timeout incorrectly retired authoritative metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "focus-lock timeout incorrectly retired the presentation journal"
+  assert_grep "herdr presentation focus lock unavailable" "$case_dir/stderr" \
+    "focus-lock timeout did not explain why metadata was preserved"
+  [ ! -e "$treehouse_called" ] \
+    || fail "focus-lock timeout returned the authoritative recovery worktree"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "focus-lock timeout changed the recovery worktree branch"
+  [ -e "$case_dir/wt/.fm-grok-turnend" ] \
+    || fail "focus-lock timeout removed recovery worktree hooks"
+  assert_not_contains "$(cat "$log")" "pane close" \
+    "focus-lock timeout attempted a projection close without serialization"
+  pass "herdr projection teardown preserves recovery identity when the shared focus lock times out"
+}
+
+test_herdr_projection_teardown_preserves_metadata_when_focus_restore_fails() {
+  local case_dir log closed restored treehouse_called rc
+  case_dir=$(make_case herdr-projection-focus-restore-failure)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  configure_projection_treehouse_probe "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
+  treehouse_called="$case_dir/treehouse-called"; : > "$log"
+  : > "$case_dir/wt/.fm-grok-turnend"
+
+  set +e
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_FOCUS_FAIL=1 \
+    FM_FAKE_TREEHOUSE_CALLED="$treehouse_called" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "herdr-projection-focus-restore-failure: teardown must fail when exact focus restoration fails"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "focus-restoration failure incorrectly retired authoritative metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "focus-restoration failure incorrectly retired the presentation journal"
+  assert_grep "projected Herdr pane cleanup failed" "$case_dir/stderr" \
+    "focus-restoration failure did not explain why metadata was preserved"
+  [ ! -e "$treehouse_called" ] \
+    || fail "focus-restoration failure returned the authoritative recovery worktree"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD)" = fm/task-x1 ] \
+    || fail "focus-restoration failure changed the recovery worktree branch"
+  [ -e "$case_dir/wt/.fm-grok-turnend" ] \
+    || fail "focus-restoration failure removed recovery worktree hooks"
+  pass "herdr projection teardown preserves metadata when exact focus restoration fails"
+}
+
+test_herdr_missing_journal_projection_preserves_live_or_unknown_endpoint() {
+  local case_dir log closed restored treehouse_called state rc
+  for state in live unknown; do
+    case_dir=$(make_case "herdr-projection-missing-journal-$state")
+    write_meta "$case_dir" local-only ship
+    configure_herdr_projection_teardown_case "$case_dir"
+    configure_projection_treehouse_probe "$case_dir"
+    rm -f "$case_dir/state/task-x1.herdr-presentation"
+    log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
+    treehouse_called="$case_dir/treehouse-called"; : > "$log"
+    : > "$case_dir/wt/.fm-grok-turnend"
+
+    set +e
+    FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+      FM_FAKE_HERDR_RESTORED="$restored" FM_FAKE_HERDR_AGENT_STATE="$state" \
+      FM_FAKE_TREEHOUSE_CALLED="$treehouse_called" \
+      run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 1 "$rc" \
+      "herdr-projection-missing-journal-$state: teardown must preserve an unconfirmed marked endpoint"
+    [ -e "$case_dir/state/task-x1.meta" ] \
+      || fail "missing-journal $state endpoint incorrectly retired authoritative metadata"
+    [ ! -e "$treehouse_called" ] \
+      || fail "missing-journal $state endpoint returned the authoritative recovery worktree"
+    [ -e "$case_dir/wt/.fm-grok-turnend" ] \
+      || fail "missing-journal $state endpoint removed recovery worktree hooks"
+    assert_not_contains "$(cat "$log")" "pane close" \
+      "missing-journal $state endpoint used a generic pane close"
+  done
+  pass "marked Herdr projections with no journal preserve live or unknown endpoints without generic cleanup"
+}
+
+test_herdr_missing_journal_dead_projection_retires_after_absence_probe() {
+  local case_dir log closed restored pane_dead treehouse_called pane_probe_line treehouse_line
+  case_dir=$(make_case herdr-projection-missing-journal-dead)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  configure_projection_treehouse_probe "$case_dir"
+  rm -f "$case_dir/state/task-x1.herdr-presentation"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"
+  pane_dead="$case_dir/pane-dead"; treehouse_called="$case_dir/treehouse-called"
+  : > "$log"; : > "$pane_dead"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_PANE_DEAD="$pane_dead" FM_FAKE_TREEHOUSE_CALLED="$treehouse_called" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-projection-missing-journal-dead: teardown did not retire a positively absent endpoint"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "missing-journal dead projected endpoint retained authoritative metadata"
+  [ -e "$treehouse_called" ] \
+    || fail "missing-journal dead projected endpoint did not retire its worktree after absence proof"
+  pane_probe_line=$(grep -n '^pane get w1:p2 ' "$log" | tail -1 | cut -d: -f1)
+  treehouse_line=$(grep -n '^treehouse return ' "$log" | head -1 | cut -d: -f1)
+  [ -n "$pane_probe_line" ] && [ -n "$treehouse_line" ] \
+    && [ "$pane_probe_line" -lt "$treehouse_line" ] \
+    || fail "missing-journal dead projected endpoint retired its worktree before exact absence proof"
+  assert_not_contains "$(cat "$log")" "pane close" \
+    "missing-journal dead endpoint used a generic pane close"
+  pass "marked Herdr projection without a journal retires only after exact absence proof"
+}
+
+test_herdr_uncorrelated_projection_refuses_focus_unsafe_close() {
+  local case_dir log closed restored rc
+  case_dir=$(make_case herdr-projection-uncorrelated)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  sed -i.bak 's/^projection_id=.*/projection_id=ZyXwVuTsRqPoNmLkJiHgFe/' \
+    "$case_dir/state/task-x1.herdr-presentation"
+  rm -f "$case_dir/state/task-x1.herdr-presentation.bak"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  set +e
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "herdr-projection-uncorrelated: teardown must refuse without exact pane absence"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "uncorrelated projection incorrectly retired authoritative metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "uncorrelated projection incorrectly retired its quarantined journal"
+  assert_not_contains "$(cat "$log")" "pane close" \
+    "uncorrelated projection used a generic focus-unsafe pane close"
+  pass "uncorrelated Herdr projection preserves metadata without a generic pane close"
+}
+
+test_projected_child_cleanup_uses_guarded_projection_path() {
+  local case_dir log rc
+  case_dir=$(make_case projected-child-guard)
+  mkdir -p "$case_dir/child-home/state"
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  mv "$case_dir/state/task-x1.meta" "$case_dir/child-home/state/child-x1.meta"
+  sed -i.bak 's/task-x1/child-x1/g' "$case_dir/child-home/state/child-x1.meta"
+  rm -f "$case_dir/child-home/state/child-x1.meta.bak" \
+    "$case_dir/state/task-x1.herdr-presentation"
+  log="$case_dir/herdr.log"; : > "$log"
+  set +e
+  ROOT="$ROOT" CHILD_HOME="$case_dir/child-home" \
+    FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$case_dir/closed" \
+    FM_FAKE_HERDR_RESTORED="$case_dir/restored" FM_FAKE_HERDR_AGENT_STATE=live \
+    PATH="$case_dir/fakebin:$PATH" bash -c '
+      SCRIPT_DIR="$ROOT/bin"
+      . "$ROOT/bin/fm-backend.sh"
+      eval "$(sed -n "/^cleanup_projected_herdr_endpoint()/,/^require_orca_worktree_id()/p" "$ROOT/bin/fm-teardown.sh" | sed "/^require_orca_worktree_id()/d")"
+      eval "$(sed -n "/^cleanup_firstmate_home_children()/,/^remove_secondmate_registry_entry()/p" "$ROOT/bin/fm-teardown.sh" | sed "/^remove_secondmate_registry_entry()/d")"
+      meta_value() { fm_meta_get "$1" "$2"; }
+      require_pre_worktree_herdr_endpoint_absent() { return 0; }
+      cleanup_firstmate_home_children "$CHILD_HOME"
+    ' > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" \
+    "forced secondmate projected-child cleanup must preserve a marked live child without a journal"
+  [ -e "$case_dir/child-home/state/child-x1.meta" ] \
+    || fail "forced projected-child cleanup retired authoritative child metadata"
+  assert_not_contains "$(cat "$log")" "pane close" \
+    "forced projected-child cleanup used a generic pane close"
+  pass "forced secondmate projected-child cleanup guards a marked endpoint without a journal"
 }
 
 test_local_only_fork_remote_allows
@@ -1388,6 +1656,12 @@ test_local_only_force_overrides_unpushed
 test_herdr_teardown_clears_escalation_marker
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_projection_teardown_retains_recovery_identity_when_focus_lock_times_out
+test_herdr_projection_teardown_preserves_metadata_when_focus_restore_fails
+test_herdr_missing_journal_projection_preserves_live_or_unknown_endpoint
+test_herdr_missing_journal_dead_projection_retires_after_absence_probe
+test_herdr_uncorrelated_projection_refuses_focus_unsafe_close
+test_projected_child_cleanup_uses_guarded_projection_path
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows

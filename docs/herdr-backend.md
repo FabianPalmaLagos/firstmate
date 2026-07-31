@@ -61,6 +61,9 @@ A secondmate agent itself always stays in its ordinary parent workspace; only ch
 An absent or unconverged setting keeps the flat default.
 
 Presentation is a best-effort visual projection, never task ownership or lifecycle authority.
+Every successfully projected endpoint records exactly one `herdr_projection=projected` marker in its authoritative task metadata, independently of the non-authoritative presentation journal.
+Teardown uses that marker to require exact-pane absence proof before retiring metadata or an acquired worktree even when the journal is missing, malformed, ambiguous, or uncorrelated.
+Without a correlated journal, teardown never attempts a generic close and retires a marked projection only after the exact pane is positively absent.
 Only a fresh task with neither metadata nor an existing presentation journal is eligible for projected creation.
 Firstmate atomically publishes a three-field version 1 journal containing a random 128-bit base64url token before asking Herdr to create anything.
 After the new workspace converges to one exact task endpoint beneath one exact parent, the journal advances to a version 2 binding that records the physical home, named session, endpoint, parent, and immutable expected labels.
@@ -74,6 +77,7 @@ An ambiguous response grants no mutation or cleanup authority.
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.
 Projected children are placed in one contiguous block immediately after their owning home when the session layout, protocol, socket, `python3`, and machine-private per-session lock are all verifiable.
+For a projected spawn, that lock remains held from presentation creation through both execution-readiness boundaries and verified worker handoff so another home cannot interleave focus-changing presentation work.
 Existing legacy child labels may extend an already adjacent block read-only but are never renamed or migrated.
 A foreign, ambiguous, detached, or manually interleaved child makes ordering skip with a warning rather than rewriting the layout.
 
@@ -84,7 +88,8 @@ The worker remains on the ordinary flat or Herdr-current-order path.
 Normal task metadata remains the sole endpoint authority after creation.
 Cleanup closes only the exact recorded task pane and never calls `workspace close`.
 Herdr can move focus when closing the last pane of a non-focused projected workspace, so projected cleanup runs under the same session lock, captures the exact active tab, refuses to delete the active tab, closes the exact task pane, and restores only the exact prior tab when needed.
-If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.
+Projected teardown returns the worktree and retires task metadata, hooks, and the journal only after Herdr positively confirms that exact pane absent.
+A presentation-lock timeout, ambiguous snapshot or pane identity, unconfirmed close, or failed focus restoration refuses teardown and preserves the complete authoritative recovery identity for a safe retry.
 
 Recovery is deliberately conservative and presentation-only.
 An existing journal suppresses another projected create.
@@ -148,6 +153,7 @@ herdr_session=<session>
 herdr_workspace_id=<workspace-id>
 herdr_tab_id=<tab-id>
 herdr_pane_id=<pane-id>
+herdr_projection=projected  # projected endpoints only
 ```
 
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
@@ -193,6 +199,42 @@ A bare shell prompt is never an empty agent composer.
 Away-mode injection proceeds only on an affirmative `empty` result, never on unknown.
 This prevents a dead agent pane from receiving and possibly executing an escalation as shell input.
 
+## Execution-acknowledged spawn readiness
+
+Herdr can publish a pane id or changed foreground cwd before the corresponding interactive shell can execute terminal input.
+A successful `pane run` can therefore mean that command text was injected while its synthetic Enter was lost.
+Displayed command text alone is not execution proof.
+
+`fm_backend_herdr_wait_shell_ready` polls process information until exactly one foreground process remains stable at the expected physical cwd.
+It does not assume the pane shell matches the caller's `SHELL`.
+It then sends one side-effect-free canary whose exact adjacent output lines contain a unique token and a short POSIX checksum of the shell's own physical `pwd`, proving execution and cwd together without terminal wrapping ambiguity.
+The canary is never retyped when acknowledgement is absent.
+
+`fm-spawn.sh` applies this boundary immediately after task-pane creation and again after Treehouse enters the acquired worktree.
+It sends the resolved worker command, `GOTMPDIR`, and a unique execution witness in one safely quoted line.
+Spawn accepts native-agent evidence only when its reported identity matches the requested harness; an arbitrary agent or identity-less status is not handoff proof.
+When native identity is absent, the witness still needs matching foreground-process evidence before spawn reports success.
+Raw or custom wrapper launches require matching foreground-process evidence even when Herdr reports the wrapper's underlying supported native agent.
+Process matching accepts Herdr's verified `cmdline`, `argv0`, and string `argv` response shapes.
+Known harnesses retain their adapter-specific interpreter patterns, while an unverified raw launch must match the requested executable itself through structurally valid process-name or command evidence.
+A contradictory native identity or an unrelated restored pane shell is rejected rather than overridden by process evidence.
+
+Any failure after task-pane creation keeps abort cleanup armed for the ordinary flat layout until worker launch is submitted.
+Two matching Treehouse cwd samples must identify an isolated worktree top level in the requested project's Git common directory, then the execution canary must report that same physical cwd before the path becomes task-owned.
+Uncorroborated sibling-copy paths are never force-returned; closing the exact pre-launch pane lets the interactive Treehouse acquisition unwind its own copy.
+Once the worker launch line is submitted, destructive abort cleanup is disarmed because failed handoff confirmation cannot prove that the worker has not changed files.
+A failed handoff marks the already-published exact endpoint as uncertain, and another spawn with that task id refuses until the record is reconciled instead of reclaiming an identity-less pane as a husk.
+The retained metadata remains for supervised cleanup and carries the exact task binding required by guarded teardown.
+Pre-launch cleanup closes the exact task pane and deletes recovery data only after Herdr positively reports that pane absent; unreadable state preserves the recovery record.
+When that uncertainty occurs before Treehouse acquires a task worktree, an explicit pre-worktree abort stage lets guarded teardown accept an empty worktree identity only for the exact bound Herdr endpoint and cleanup-failure shape.
+That sole endpoint record remains authoritative until guarded teardown positively confirms the exact pane absent; a live, unreadable, or otherwise unconfirmed pane refuses every retirement mutation.
+Successful pre-launch cleanup also removes Grok and Kimi task-scoped private authorization artifacts with their state pointers.
+Response-derived tab and pane ids survive failed partial-create or husk-replacement cleanup until exact absence is verified.
+A tab-list response proves absence only when every entry has the expected object and nonempty string id shape.
+Projected presentation tasks retain their stricter pre-submission cleanup-disarm boundary, while tmux and the other runtime providers retain their existing launch sequence.
+
+[`verification/runtime-backends.md`](verification/runtime-backends.md#spawn-readiness) owns the versioned real-Pi and tmux-control evidence for this boundary.
+
 The current operational envelope starts with U+2063 and `FIRSTMATE_OP: `.
 The separate routed-request carrier uses `[fm-from-firstmate]` plus U+2063.
 U+2063 survives Herdr terminal input as text, unlike the legacy ASCII control separator that could erase the visible routing label.
@@ -203,7 +245,8 @@ No Herdr-specific copy of that protocol exists.
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
-Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
+Without retained task-bound endpoint metadata, create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
+Retained Herdr endpoint metadata with an exact `endpoint_task_id=` binding blocks a same-id retry unless a markerless record validates structurally and its exact pane is positively dead; explicit uncertainty markers always block, while `agent_not_found`, live, unknown, or invalid bound records require reconciliation.
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
@@ -235,8 +278,9 @@ The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-a
 
 Harnesses with native tracked background execution can run the daemon in their terminal.
 Pi has no such mechanism.
-`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, runs the daemon there with an explicit supervisor target and backend, records the exact daemon pane, and closes only that pane on stop.
-It never splits the captain's active tab and never uses shell `&`.
+`bin/fm-afk-launch.sh` therefore creates a dedicated unfocused Herdr workspace, records the exact daemon pane, waits for that pane to pass the same execution-acknowledged shell-readiness boundary, and only then submits the daemon command with an explicit supervisor target and backend.
+It never splits the captain's active tab, retries a potentially pending daemon command, or uses shell `&`.
+A readiness failure closes only the recorded exact pane and rolls back the away lifecycle, while an unconfirmed close preserves the record for reconciliation.
 Recovery reconciles only the recorded exact id.
 
 On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
@@ -280,6 +324,8 @@ tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
+tests/fm-spawn-herdr-readiness.test.sh
+tests/fm-spawn-pi-herdr-e2e.test.sh
 ```
 
 Real Herdr tests use the named lab helper and default-session tripwire.

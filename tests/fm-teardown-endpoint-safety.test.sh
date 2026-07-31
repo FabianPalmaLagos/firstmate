@@ -30,7 +30,29 @@ printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
 printf '\n' >> "${FM_RUNTIME_LOG:?}"
 exit 0
 SH
-  chmod +x "$TMP_ROOT/$dir/fakebin/tmux" "$TMP_ROOT/$dir/fakebin/treehouse"
+  cat > "$TMP_ROOT/$dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf 'herdr' >> "${FM_RUNTIME_LOG:?}"
+printf ' <%s>' "$@" >> "${FM_RUNTIME_LOG:?}"
+printf '\n' >> "${FM_RUNTIME_LOG:?}"
+case "${1:-} ${2:-}" in
+  "pane get")
+    if [ "${FM_FAKE_HERDR_PANE_STATE:-unknown}" = dead ]; then
+      printf '{"error":{"code":"pane_not_found"}}\n' >&2
+    else
+      printf '{"error":{"code":"internal_error"}}\n' >&2
+    fi
+    exit 1
+    ;;
+  "agent get")
+    printf '{"error":{"code":"agent_not_found"}}\n' >&2
+    exit 1
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$TMP_ROOT/$dir/fakebin/tmux" "$TMP_ROOT/$dir/fakebin/treehouse" \
+    "$TMP_ROOT/$dir/fakebin/herdr"
   printf '%s\n' "$TMP_ROOT/$dir"
 }
 
@@ -90,7 +112,34 @@ test_invalid_endpoint_records_refuse_before_mutation() {
     "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
   assert_refused_without_mutation "$dir" "$id" "duplicate task binding"
 
-  pass "fm-teardown: missing, empty, malformed, ambiguous, and task-mismatched endpoints refuse before every mutation or runtime call"
+  dir=$(make_case forged-pre-worktree)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=isolated:fm-$id" "endpoint_task_id=$id" "worktree=" \
+    "abort_cleanup_stage=pre-worktree" "abort_cleanup=failed" \
+    "project=$dir/project" "kind=scout"
+  assert_refused_without_mutation "$dir" "$id" "non-Herdr pre-worktree marker"
+
+  dir=$(make_case duplicate-projection-marker)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
+    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" \
+    "herdr_pane_id=w1:p2" "herdr_projection=projected" "herdr_projection=projected"
+  assert_refused_without_mutation "$dir" "$id" "ambiguous Herdr projection marker"
+
+  dir=$(make_case malformed-projection-marker)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
+    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" \
+    "herdr_pane_id=w1:p2" "herdr_projection=flat"
+  assert_refused_without_mutation "$dir" "$id" "malformed Herdr projection marker"
+
+  dir=$(make_case backend-inconsistent-projection-marker)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=isolated:fm-$id" "endpoint_task_id=$id" "worktree=$dir/worktree" \
+    "project=$dir/project" "herdr_projection=projected"
+  assert_refused_without_mutation "$dir" "$id" "backend-inconsistent Herdr projection marker"
+
+  pass "fm-teardown: missing, empty, malformed, ambiguous, task-mismatched, and backend-inconsistent endpoints refuse before every mutation or runtime call"
 }
 
 test_supported_backend_endpoint_records_validate() {
@@ -114,8 +163,17 @@ test_supported_backend_endpoint_records_validate() {
   id=herdr-task
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=lab:w1:p2" "endpoint_task_id=$id" "worktree=$dir/worktree" "project=$dir/project" \
-    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" "herdr_pane_id=w1:p2"
+    "backend=herdr" "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" \
+    "herdr_pane_id=w1:p2" "herdr_projection=projected"
   fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" || fail "valid Herdr endpoint refused"
+
+  id=herdr-pre-worktree
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p3" "endpoint_task_id=$id" "worktree=" "project=$dir/project" \
+    "kind=scout" "backend=herdr" "abort_cleanup_stage=pre-worktree" "abort_cleanup=failed" \
+    "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t3" "herdr_pane_id=w1:p3"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" \
+    || fail "valid pre-worktree Herdr abort endpoint refused"
 
   id=zellij-task
   fm_write_meta "$dir/home/state/$id.meta" \
@@ -158,6 +216,35 @@ test_tmux_empty_target_refuses_without_invocation() {
   [ "$rc" -ne 0 ] || fail "direct empty tmux target unexpectedly succeeded"
   [ ! -s "$dir/runtime.log" ] || fail "direct empty tmux target invoked tmux"
   pass "tmux backend: direct empty target returns nonzero without invoking tmux"
+}
+
+test_pre_worktree_herdr_teardown_requires_positive_pane_absence() {
+  local dir id=herdr-abort rc
+  dir=$(make_case pre-worktree-unknown)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p3" "endpoint_task_id=$id" "worktree=" "project=$dir/project" \
+    "kind=scout" "backend=herdr" "abort_cleanup_stage=pre-worktree" "abort_cleanup=failed" \
+    "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t3" "herdr_pane_id=w1:p3"
+  set +e
+  FM_FAKE_HERDR_PANE_STATE=unknown run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "pre-worktree Herdr teardown retired an unconfirmed endpoint"
+  assert_present "$dir/home/state/$id.meta" \
+    "pre-worktree Herdr teardown removed metadata without positive pane absence"
+  assert_contains "$(cat "$dir/stderr")" "exact pre-worktree Herdr pane absence is unconfirmed" \
+    "pre-worktree Herdr teardown did not report its proof failure"
+
+  dir=$(make_case pre-worktree-dead)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=lab:w1:p3" "endpoint_task_id=$id" "worktree=" "project=$dir/project" \
+    "kind=scout" "backend=herdr" "abort_cleanup_stage=pre-worktree" "abort_cleanup=failed" \
+    "herdr_session=lab" "herdr_workspace_id=w1" "herdr_tab_id=w1:t3" "herdr_pane_id=w1:p3"
+  FM_FAKE_HERDR_PANE_STATE=dead run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "pre-worktree Herdr teardown refused a positively absent pane: $(cat "$dir/stderr")"
+  [ ! -e "$dir/home/state/$id.meta" ] \
+    || fail "pre-worktree Herdr teardown retained metadata after positive pane absence"
+  pass "fm-teardown: pre-worktree Herdr records retire only after positive exact-pane absence"
 }
 
 test_recorded_process_identity_cleanup_is_exact() {
@@ -271,5 +358,6 @@ SH
 test_invalid_endpoint_records_refuse_before_mutation
 test_supported_backend_endpoint_records_validate
 test_tmux_empty_target_refuses_without_invocation
+test_pre_worktree_herdr_teardown_requires_positive_pane_absence
 test_recorded_process_identity_cleanup_is_exact
 test_isolated_tmux_invalid_and_valid_cleanup

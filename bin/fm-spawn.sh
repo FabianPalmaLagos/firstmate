@@ -231,6 +231,13 @@ HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
+HERDR_ABORT_CLEANUP=0
+HERDR_ABORT_METADATA_RETIRE_ALLOWED=1
+HERDR_ABORT_WORKTREE=
+HERDR_SES=
+HERDR_WORKSPACE_ID=
+HERDR_TAB_ID=
+HERDR_PANE_ID=
 SPAWN_TASK_LOCK=
 SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
@@ -253,6 +260,105 @@ parse_orca_worktree_result() {
   fi
 }
 
+herdr_preserve_abort_meta() {
+  local abort_worktree
+  mkdir -p "$STATE" 2>/dev/null || return 1
+  abort_worktree=${WT:-${HERDR_ABORT_WORKTREE:-}}
+  if ! grep -qxF "herdr_pane_id=$HERDR_PANE_ID" "$STATE/$ID.meta" 2>/dev/null \
+     || ! grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null \
+     || { [ "${HERDR_PROJECTED:-0}" -eq 1 ] \
+          && ! grep -qxF 'herdr_projection=projected' "$STATE/$ID.meta" 2>/dev/null; } \
+     || { [ -z "$abort_worktree" ] \
+          && ! grep -qxF 'abort_cleanup_stage=pre-worktree' "$STATE/$ID.meta" 2>/dev/null; }; then
+    {
+      echo "window=${T:-}"
+      echo "endpoint_task_id=$ID"
+      echo "worktree=$abort_worktree"
+      [ -n "$abort_worktree" ] || echo 'abort_cleanup_stage=pre-worktree'
+      echo "project=$PROJ_ABS"
+      echo "harness=$HARNESS"
+      echo "kind=$KIND"
+      echo "mode=${MODE:-no-mistakes}"
+      echo "yolo=${YOLO:-off}"
+      echo "tasktmp=${TASK_TMP:-}"
+      echo "model=${MODEL:-default}"
+      echo "effort=${EFFORT:-default}"
+      echo "backend=herdr"
+      echo "herdr_session=$HERDR_SES"
+      echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
+      echo "herdr_tab_id=$HERDR_TAB_ID"
+      echo "herdr_pane_id=$HERDR_PANE_ID"
+      [ "${HERDR_PROJECTED:-0}" -ne 1 ] || echo "herdr_projection=projected"
+      if [ "$KIND" = secondmate ]; then
+        echo "home=${PROJ_ABS:-$FIRSTMATE_HOME}"
+        echo "projects=${SECONDMATE_PROJECTS:-}"
+      fi
+    } > "$STATE/$ID.meta" || return 1
+  fi
+  grep -qxF 'abort_cleanup=failed' "$STATE/$ID.meta" 2>/dev/null \
+    || echo 'abort_cleanup=failed' >> "$STATE/$ID.meta"
+}
+
+herdr_remove_abort_grok_auth() {
+  local token hooks_dir
+  token=$(cat "$STATE/$ID.grok-turnend-token" 2>/dev/null || true)
+  case "$token" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  hooks_dir="${GROK_HOME:-$HOME/.grok}/hooks/fm-turn-end.d"
+  rm -f "$hooks_dir/$token"
+}
+
+herdr_remove_abort_kimi_auth() {
+  local token hooks_dir
+  token=$(cat "$STATE/$ID.kimi-turnend-token" 2>/dev/null || true)
+  case "$token" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  hooks_dir="$HOME/.kimi-code/fm-turn-end.d"
+  rm -f "$hooks_dir/$token"
+}
+
+herdr_spawn_abort_cleanup() {
+  local cleanup_failed=0 return_out='' cleanup_wt pane_state
+  [ "$HERDR_ABORT_CLEANUP" = 1 ] || return 0
+  HERDR_ABORT_CLEANUP=0
+  [ "$HERDR_ABORT_METADATA_RETIRE_ALLOWED" = 1 ] || cleanup_failed=1
+  cleanup_wt=${WT:-${HERDR_ABORT_WORKTREE:-}}
+  if [ -n "${HERDR_PANE_ID:-}" ]; then
+    [ -n "${T:-}" ] || T="$HERDR_SES:$HERDR_PANE_ID"
+    if [ "${HERDR_PROJECTED:-0}" -ne 1 ]; then
+      fm_backend_kill herdr "$T" 2>/dev/null || true
+    fi
+    pane_state=$(fm_backend_herdr_pane_agent_state "$HERDR_SES" "$HERDR_PANE_ID")
+    if [ "$pane_state" != dead ]; then
+      echo "error: Herdr spawn abort could not prove task pane $T absent after cleanup (state=$pane_state)" >&2
+      cleanup_failed=1
+    fi
+  elif [ -n "${HERDR_TAB_ID:-}" ]; then
+    if ! fm_backend_herdr_close_created_tab_exact \
+      "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_TAB_ID"; then
+      cleanup_failed=1
+    fi
+  fi
+  if [ "$cleanup_failed" -eq 0 ] \
+     && [ -n "$cleanup_wt" ] \
+     && [ -d "$cleanup_wt" ] \
+     && [ "$(real_path_or_raw "$cleanup_wt")" != "${PROJ_ABS_REAL:-}" ]; then
+    if ! return_out=$( ( cd "$PROJ_ABS" && treehouse return --force "$cleanup_wt" ) 2>&1 ); then
+      echo "error: Herdr spawn abort could not return worktree $cleanup_wt: $return_out" >&2
+      cleanup_failed=1
+    fi
+  fi
+  if [ "$cleanup_failed" -eq 1 ]; then
+    herdr_preserve_abort_meta || true
+    return 1
+  fi
+  herdr_remove_abort_grok_auth
+  herdr_remove_abort_kimi_auth
+  [ -z "${TASK_TMP:-}" ] || rm -rf "$TASK_TMP"
+  rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
+    "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
+    "$STATE/$ID.kimi-turnend-token"
+  return 0
+}
+
 spawn_abort_cleanup() {
   local status=$?
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
@@ -260,6 +366,7 @@ spawn_abort_cleanup() {
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
       echo "warning: herdr presentation focus lock unavailable; retaining the projection journal and refusing concurrent abort cleanup" >&2
       HERDR_PROJECTION_ABORT_CLEANUP=0
+      HERDR_ABORT_METADATA_RETIRE_ALLOWED=0
     fi
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ]; then
@@ -272,6 +379,9 @@ spawn_abort_cleanup() {
   if [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ]; then
     HERDR_PRESENTATION_ORDER_LOCK_HELD=0
     fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
+  fi
+  if ! herdr_spawn_abort_cleanup; then
+    status=1
   fi
   if [ "$ORCA_ABORT_CLEANUP" = 1 ]; then
     ORCA_ABORT_CLEANUP=0
@@ -317,17 +427,20 @@ trap spawn_abort_cleanup EXIT
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} attempt lock_path polls sleep_s
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
+  polls=${FM_HERDR_PRESENTATION_LOCK_POLLS:-1500}
+  sleep_s=${FM_HERDR_PRESENTATION_LOCK_SLEEP:-0.1}
+  case "$polls" in ''|*[!0-9]*|0) polls=1500 ;; esac
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$polls" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
     fi
-    sleep 0.1
+    sleep "$sleep_s"
     attempt=$((attempt + 1))
   done
   return 1
@@ -383,6 +496,32 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
+  if [ -f "$STATE/$ID.meta" ] \
+     && { grep -qxF 'abort_cleanup=failed' "$STATE/$ID.meta" 2>/dev/null \
+          || grep -qxF 'handoff_uncertain=1' "$STATE/$ID.meta" 2>/dev/null; }; then
+    echo "error: task $ID has retained endpoint metadata after uncertain Herdr ownership; reconcile it before retrying spawn" >&2
+    exit 1
+  fi
+  if [ -f "$STATE/$ID.meta" ] \
+     && grep -qxF 'backend=herdr' "$STATE/$ID.meta" 2>/dev/null \
+     && grep -qxF "endpoint_task_id=$ID" "$STATE/$ID.meta" 2>/dev/null \
+     && { [ "$BACKEND" != herdr ] \
+          || ! grep -qxF 'handoff_confirmed=1' "$STATE/$ID.meta" 2>/dev/null; }; then
+    if ! fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" \
+       || ! fm_backend_source herdr \
+       || ! fm_backend_herdr_parse_target "$FM_BACKEND_VALIDATED_TARGET"; then
+      echo "error: task $ID has legacy Herdr endpoint metadata that cannot be proven dead; reconcile it before retrying spawn" >&2
+      exit 1
+    fi
+    LEGACY_HERDR_ENDPOINT_STATE=$(fm_backend_herdr_pane_agent_state \
+      "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+    if [ "$LEGACY_HERDR_ENDPOINT_STATE" != dead ]; then
+      echo "error: task $ID has a retained legacy Herdr endpoint that is $LEGACY_HERDR_ENDPOINT_STATE; reconcile it before retrying spawn" >&2
+      exit 1
+    fi
+  fi
+fi
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
@@ -462,6 +601,7 @@ launch_template() {
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    HERDR_HANDOFF_SPEC=$LAUNCH
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -494,6 +634,7 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+[ -n "${HERDR_HANDOFF_SPEC:-}" ] || HERDR_HANDOFF_SPEC=$HARNESS
 
 case "$HARNESS" in
   pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
@@ -837,6 +978,29 @@ real_path_or_raw() {  # <path>
   fi
 }
 
+spawn_git_common_dir() {  # <path>
+  local path=$1 common
+  common=$(git -C "$path" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$path/$common" ;;
+  esac
+  real_path_or_raw "$common"
+}
+
+spawn_path_is_isolated_worktree() {  # <candidate-path>
+  local candidate=$1 candidate_real top top_real candidate_common project_common
+  candidate_real=$(real_path_or_raw "$candidate")
+  [ "$candidate_real" != "$PROJ_ABS_REAL" ] || return 1
+  top=$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || true)
+  [ -n "$top" ] || return 1
+  top_real=$(real_path_or_raw "$top")
+  [ "$candidate_real" = "$top_real" ] || return 1
+  candidate_common=$(spawn_git_common_dir "$candidate") || return 1
+  project_common=$(spawn_git_common_dir "$PROJ_ABS") || return 1
+  [ "$candidate_common" = "$project_common" ]
+}
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -1084,16 +1248,29 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
-      read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
-$HERDR_TASK_IDS
-EOF
+      if ! fm_backend_herdr_create_task \
+        "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID" >/dev/null; then
+        HERDR_TAB_ID=${FM_BACKEND_HERDR_CREATE_TAB_ID:-}
+        HERDR_PANE_ID=${FM_BACKEND_HERDR_CREATE_PANE_ID:-}
+        if [ -n "$HERDR_TAB_ID" ] || [ -n "$HERDR_PANE_ID" ]; then
+          [ -z "$HERDR_PANE_ID" ] || T="$HERDR_SES:$HERDR_PANE_ID"
+          HERDR_ABORT_CLEANUP=1
+        fi
+        exit 1
+      fi
+      HERDR_TAB_ID=$FM_BACKEND_HERDR_CREATE_TAB_ID
+      HERDR_PANE_ID=$FM_BACKEND_HERDR_CREATE_PANE_ID
     fi
     if [ -z "$HERDR_TAB_ID" ] || [ -z "$HERDR_PANE_ID" ]; then
       echo "error: herdr did not return a tab/pane id for $W" >&2
       exit 1
     fi
     T="$HERDR_SES:$HERDR_PANE_ID"
+    HERDR_ABORT_CLEANUP=1
+    fm_backend_herdr_wait_shell_ready "$T" "$PROJ_ABS_REAL" task || {
+      echo "error: Herdr task pane was not ready before treehouse handoff" >&2
+      exit 1
+    }
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
@@ -1261,13 +1438,25 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # a mismatch just becomes the new candidate rather than resetting the wait, so a
   # pane that is already settled by the first real read only costs the one existing
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
+  # Herdr then requires the exact pane shell to execute the readiness canary and
+  # report that same physical cwd before the candidate gains cleanup ownership.
+  # This second correlation prevents repeated stale reads of a sibling worktree
+  # from authorizing launch or force-return of another task's copy.
   candidate=""
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     if [ -n "$p" ]; then
       p_real=$(real_path_or_raw "$p")
-      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
+      if [ "$p_real" != "$PROJ_ABS_REAL" ] \
+         && { [ "$BACKEND" != herdr ] || spawn_path_is_isolated_worktree "$p"; }; then
         if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
+          if [ "$BACKEND" = herdr ]; then
+            fm_backend_herdr_wait_shell_ready "$T" "$p_real" treehouse || {
+              echo "error: Herdr treehouse shell did not confirm ownership of candidate $p_real" >&2
+              exit 1
+            }
+            HERDR_ABORT_WORKTREE=$p
+          fi
           WT="$p"
           break
         fi
@@ -1454,6 +1643,7 @@ META_WINDOW=$T
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
+    [ "$HERDR_PROJECTED" -ne 1 ] || echo "herdr_projection=projected"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"
@@ -1505,18 +1695,38 @@ if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
 fi
-# Export GOTMPDIR into the crewmate's pane shell so the agent and every child
-# process (go build, go test, ...) inherit it. Sent before the launch command so
-# the env is set when the agent starts; the brief sleep lets the export land.
-spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
-sleep 0.3
-spawn_send_literal "$T" "$LAUNCH"
-sleep 0.3
-if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
-  HERDR_PROJECTION_ABORT_CLEANUP=0
-  spawn_herdr_presentation_order_lock_release
+if [ "$BACKEND" = herdr ]; then
+  HERDR_LAUNCH_WITNESS=$(fm_backend_herdr_new_token launch)
+  sq_launch_witness=$(shell_quote "$HERDR_LAUNCH_WITNESS")
+  sq_gotmp=$(shell_quote "$TASK_TMP/gotmp")
+  HERDR_LAUNCH="printf '%s\\n' $sq_launch_witness; export GOTMPDIR=$sq_gotmp; $LAUNCH"
+  # Once the launch line is submitted, a worker may already be changing its
+  # worktree even when handoff confirmation later stays uncertain. Preserve the
+  # published endpoint for supervised cleanup instead of force-returning work.
+  HERDR_ABORT_CLEANUP=0
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
+    HERDR_PROJECTION_ABORT_CLEANUP=0
+  fi
+  spawn_send_text_line "$T" "$HERDR_LAUNCH"
+  if ! fm_backend_herdr_wait_launch_handoff "$T" "$HERDR_HANDOFF_SPEC" "$HERDR_LAUNCH_WITNESS"; then
+    grep -qxF 'handoff_uncertain=1' "$STATE/$ID.meta" 2>/dev/null \
+      || echo 'handoff_uncertain=1' >> "$STATE/$ID.meta"
+    exit 1
+  fi
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
+    spawn_herdr_presentation_order_lock_release
+  fi
+  HERDR_ABORT_CLEANUP=0
+else
+  # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
+  # process (go build, go test, ...) inherit it. Sent before the launch command so
+  # the env is set when the agent starts; the brief sleep lets the export land.
+  spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+  sleep 0.3
+  spawn_send_literal "$T" "$LAUNCH"
+  sleep 0.3
+  spawn_send_key "$T" Enter
 fi
-spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
@@ -1549,6 +1759,10 @@ if [ "$KIND" = secondmate ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
+fi
+if [ "$BACKEND" = herdr ]; then
+  grep -qxF 'handoff_confirmed=1' "$STATE/$ID.meta" 2>/dev/null \
+    || echo 'handoff_confirmed=1' >> "$STATE/$ID.meta"
 fi
 
 echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT"

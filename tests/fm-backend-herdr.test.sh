@@ -493,13 +493,15 @@ test_create_task_refuses_when_preexisting_husk_tab_remains() {
   printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-stale-husk","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-stale-husk","workspace_id":"w1"}]}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-stale-husk /tmp/proj' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-stale-husk /tmp/proj; status=$?; printf "\nrecovery=%s %s\n" "$FM_BACKEND_HERDR_CREATE_TAB_ID" "$FM_BACKEND_HERDR_CREATE_PANE_ID"; exit "$status"' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "create_task must fail when a preexisting same-labeled husk remains after close-and-replace"
   assert_contains "$out" "failed to remove preexisting herdr tab" "create_task did not report the stale preexisting husk tab"
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' "create_task did not close the stale husk by tab id"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t3' "create_task did not close the exact replacement tab after husk verification failed"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "create_task should not rely on pane close for a preexisting husk"
-  pass "fm_backend_herdr_create_task: refuses success when a preexisting husk tab remains after replacement"
+  assert_contains "$out" "recovery=w1:t3 w1:p3" "failed replacement cleanup discarded its exact recovery identifiers"
+  pass "fm_backend_herdr_create_task: failed husk replacement cleanup preserves exact recovery identifiers"
 }
 
 test_create_task_refuses_when_agent_state_ambiguous() {
@@ -565,6 +567,57 @@ test_create_task_creates_and_parses_ids() {
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' \
     "create_task must never prune when called with no seeded default tab id (the 4th arg defaults to empty)"
   pass "fm_backend_herdr_create_task: creates a tab and parses tab_id/pane_id from the JSON response, prunes nothing when no seeded tab id is given"
+}
+
+test_create_task_closes_and_verifies_tab_when_pane_id_is_missing() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/create-task-tab-only"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-tab-only /tmp/proj' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task accepted a response missing its pane id"
+  assert_contains "$out" "could not parse tab/pane id" "create_task did not report the partial response"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w1:t2' \
+    "create_task did not close the exact newly created tab when pane-id parsing failed"
+  [ "$(grep -c $'\x1f''tab'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w1' "$log")" -eq 2 ] \
+    || fail "create_task did not verify the exact tab was absent after cleanup"
+  pass "fm_backend_herdr_create_task: a tab-only create response closes and verifies the exact new tab"
+}
+
+test_create_task_preserves_tab_id_when_partial_cleanup_is_unverified() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/create-task-tab-only-unverified"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-tab-only","workspace_id":"w1"}]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-tab-only /tmp/proj; status=$?; printf "\nrecovery=%s %s\n" "$FM_BACKEND_HERDR_CREATE_TAB_ID" "$FM_BACKEND_HERDR_CREATE_PANE_ID"; exit "$status"' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task accepted a partial response whose tab cleanup was unverified"
+  assert_contains "$out" "newly created herdr tab w1:t2 remains" "create_task did not report the unverified partial cleanup"
+  assert_contains "$out" "recovery=w1:t2 " "create_task discarded the exact tab id after unverified cleanup"
+  pass "fm_backend_herdr_create_task: unverified partial cleanup retains the exact tab recovery id"
+}
+
+test_create_task_treats_malformed_tab_entries_as_unverified_cleanup() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/create-task-tab-malformed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":["unexpected"]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-tab-only /tmp/proj; status=$?; printf "\nrecovery=%s %s\n" "$FM_BACKEND_HERDR_CREATE_TAB_ID" "$FM_BACKEND_HERDR_CREATE_PANE_ID"; exit "$status"' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task treated malformed tab entries as positive cleanup proof"
+  assert_contains "$out" "could not parse cleanup verification" "malformed tab entries did not produce an unverified-cleanup error"
+  assert_contains "$out" "recovery=w1:t2 " "malformed tab entries cleared the exact recovery id"
+  pass "fm_backend_herdr_create_task: malformed tab entries preserve recovery ownership instead of proving absence"
 }
 
 # --- container_ensure / create_task: --no-focus and per-home label ----------
@@ -1313,27 +1366,79 @@ test_spawn_task_lock_covers_all_backend_creation_and_metadata_publication() {
   pass "fm-spawn: one task lock spans every backend creation path through metadata publication"
 }
 
-test_projected_spawn_disarms_cleanup_before_ambiguous_launch_submission() {
-  local literal_pattern disarm_pattern release_pattern enter_pattern literal_line disarm_line release_line enter_line
+test_projected_spawn_holds_lock_through_witnessed_handoff() {
+  local disarm_pattern release_pattern launch_pattern handoff_pattern
+  local disarm_line release_line launch_line handoff_line
   # These are literal source patterns for grep, so shell expansion would invalidate the assertion.
-  # shellcheck disable=SC2016
-  literal_pattern='spawn_send_literal "$T" "$LAUNCH"'
   # shellcheck disable=SC2016
   disarm_pattern='HERDR_PROJECTION_ABORT_CLEANUP=0'
   release_pattern='spawn_herdr_presentation_order_lock_release'
   # shellcheck disable=SC2016
-  enter_pattern='spawn_send_key "$T" Enter'
-  literal_line=$(grep -nF "$literal_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  launch_pattern='spawn_send_text_line "$T" "$HERDR_LAUNCH"'
+  # shellcheck disable=SC2016
+  handoff_pattern='fm_backend_herdr_wait_launch_handoff "$T" "$HERDR_HANDOFF_SPEC" "$HERDR_LAUNCH_WITNESS"'
   disarm_line=$(grep -nF "$disarm_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
   release_line=$(grep -nF "$release_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
-  enter_line=$(grep -nF "$enter_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
-  [ -n "$literal_line" ] && [ -n "$disarm_line" ] && [ -n "$release_line" ] && [ -n "$enter_line" ] \
-    || fail "could not locate the projected launch cleanup boundary"
-  [ "$literal_line" -lt "$disarm_line" ] \
-    && [ "$disarm_line" -lt "$release_line" ] \
-    && [ "$release_line" -lt "$enter_line" ] \
-    || fail "projected spawn must disarm cleanup before releasing its lock and submitting ambiguous Enter"
-  pass "fm-spawn: projected cleanup disarms before lock release and ambiguous launch submission"
+  launch_line=$(grep -nF "$launch_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  handoff_line=$(grep -nF "$handoff_pattern" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  [ -n "$disarm_line" ] && [ -n "$release_line" ] && [ -n "$launch_line" ] && [ -n "$handoff_line" ] \
+    || fail "could not locate the projected witnessed-launch cleanup boundary"
+  [ "$disarm_line" -lt "$launch_line" ] \
+    && [ "$launch_line" -lt "$handoff_line" ] \
+    && [ "$handoff_line" -lt "$release_line" ] \
+    || fail "projected spawn must retain its lock through witnessed worker handoff"
+  pass "fm-spawn: projected presentation lock spans witnessed worker handoff"
+}
+
+test_presentation_lock_serializes_focus_order_through_handoff() {
+  local dir lock log first_ready release_first function_source first_pid second_pid sequence
+  dir="$TMP_ROOT/presentation-handoff-lock"; mkdir -p "$dir"
+  lock="$dir/presentation.lock"
+  log="$dir/order.log"
+  first_ready="$dir/first-ready"
+  release_first="$dir/release-first"
+  : > "$log"
+  function_source=$(sed -n '/^spawn_herdr_presentation_order_lock_acquire()/,/^# Batch dispatch/p' "$ROOT/bin/fm-spawn.sh" | sed '$d')
+  ROOT="$ROOT" LOCK="$lock" LOG="$log" READY="$first_ready" RELEASE="$release_first" FUNCTION_SOURCE="$function_source" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    eval "$FUNCTION_SOURCE"
+    fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$LOCK"; }
+    FM_HERDR_PRESENTATION_LOCK_POLLS=200
+    FM_HERDR_PRESENTATION_LOCK_SLEEP=0.01
+    spawn_herdr_presentation_order_lock_acquire fmtest || exit 1
+    printf "create-a\n" >> "$LOG"
+    : > "$READY"
+    while [ ! -e "$RELEASE" ]; do sleep 0.01; done
+    printf "handoff-a\n" >> "$LOG"
+    spawn_herdr_presentation_order_lock_release
+  ' &
+  first_pid=$!
+  while [ ! -e "$first_ready" ] && kill -0 "$first_pid" 2>/dev/null; do sleep 0.01; done
+  [ -e "$first_ready" ] || fail "first projected lifecycle did not acquire the presentation lock"
+  ROOT="$ROOT" LOCK="$lock" LOG="$log" FUNCTION_SOURCE="$function_source" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    eval "$FUNCTION_SOURCE"
+    fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$LOCK"; }
+    FM_HERDR_PRESENTATION_LOCK_POLLS=200
+    FM_HERDR_PRESENTATION_LOCK_SLEEP=0.01
+    spawn_herdr_presentation_order_lock_acquire fmtest || exit 1
+    printf "create-b\nhandoff-b\n" >> "$LOG"
+    spawn_herdr_presentation_order_lock_release
+  ' &
+  second_pid=$!
+  sleep 0.05
+  [ "$(cat "$log")" = create-a ] || {
+    : > "$release_first"
+    wait "$first_pid" "$second_pid" 2>/dev/null || true
+    fail "concurrent projected lifecycle reordered focus work before first handoff"
+  }
+  : > "$release_first"
+  wait "$first_pid" || fail "first projected lifecycle failed"
+  wait "$second_pid" || fail "second projected lifecycle exhausted its bounded contention budget"
+  sequence=$(cat "$log")
+  [ "$sequence" = $'create-a\nhandoff-a\ncreate-b\nhandoff-b' ] \
+    || fail "projected lifecycle order crossed a verified handoff boundary: $sequence"
+  pass "fm-spawn: presentation lock preserves concurrent focus order through handoff"
 }
 
 test_projected_abort_cleanup_holds_presentation_lock() {
@@ -1346,6 +1451,7 @@ test_projected_abort_cleanup_holds_presentation_lock() {
   ROOT="$ROOT" LOCK="$lock" STARTED="$started" PROCEED="$proceed" FUNCTION_SOURCE="$function_source" bash -c '
     . "$ROOT/bin/fm-wake-lib.sh"
     eval "$FUNCTION_SOURCE"
+    herdr_spawn_abort_cleanup() { return 0; }
     fm_backend_herdr_projection_cleanup_exact() {
       : > "$STARTED"
       while [ ! -e "$PROCEED" ]; do sleep 0.01; done
@@ -1376,6 +1482,64 @@ test_projected_abort_cleanup_holds_presentation_lock() {
   LOCK="$lock" ROOT="$ROOT" bash -c '. "$ROOT/bin/fm-wake-lib.sh"; fm_lock_try_acquire "$LOCK"' \
     || fail "presentation lock remained held after abort cleanup"
   pass "fm-spawn: projected abort cleanup remains serialized by the presentation lock"
+}
+
+test_projected_abort_lock_timeout_preserves_endpoint_metadata() {
+  local dir state worktree returned function_source rc
+  dir="$TMP_ROOT/projection-abort-lock-timeout"; state="$dir/state"
+  worktree="$dir/worktree"; returned="$dir/returned"
+  mkdir -p "$state" "$dir/project" "$worktree"
+  function_source=$(sed -n '/^herdr_preserve_abort_meta()/,/^trap spawn_abort_cleanup EXIT/p' "$ROOT/bin/fm-spawn.sh" | sed '$d')
+  if ROOT="$ROOT" STATE="$state" FUNCTION_SOURCE="$function_source" PROJECT="$dir/project" \
+    WORKTREE="$worktree" RETURNED="$returned" bash -c '
+    eval "$FUNCTION_SOURCE"
+    spawn_herdr_presentation_order_lock_acquire() { return 1; }
+    fm_backend_herdr_projection_cleanup_exact() { return 99; }
+    fm_backend_herdr_pane_agent_state() { printf dead; }
+    fm_lock_release() { return 0; }
+    real_path_or_raw() { printf "%s" "$1"; }
+    treehouse() { : > "$RETURNED"; }
+    ID=projection-timeout
+    T=fmtest:w9:p2
+    WT=$WORKTREE
+    PROJ_ABS=$PROJECT
+    HARNESS=pi
+    KIND=scout
+    MODE=no-mistakes
+    YOLO=off
+    TASK_TMP=
+    MODEL=default
+    EFFORT=xhigh
+    HERDR_SES=fmtest
+    HERDR_WORKSPACE_ID=w9
+    HERDR_TAB_ID=w9:t2
+    HERDR_PANE_ID=w9:p2
+    HERDR_PROJECTED=1
+    HERDR_ABORT_CLEANUP=1
+    HERDR_ABORT_METADATA_RETIRE_ALLOWED=1
+    HERDR_ABORT_WORKTREE=
+    HERDR_PROJECTION_ABORT_CLEANUP=1
+    HERDR_PROJECTION_ABORT_SESSION=fmtest
+    HERDR_PROJECTION_ABORT_TASK_PANE=w9:p2
+    HERDR_PROJECTION_ABORT_SEEDED_PANE=w9:p1
+    HERDR_PRESENTATION_ORDER_LOCK_HELD=0
+    ORCA_ABORT_CLEANUP=0
+    SPAWN_TASK_LOCK_HELD=0
+    CONFIG_INHERIT_LOCK_HELD=0
+    spawn_abort_cleanup
+  ' > "$dir/stdout" 2> "$dir/stderr"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 0 ] || fail "projection lock timeout reported successful authoritative cleanup"
+  [ -f "$state/projection-timeout.meta" ] || fail "projection lock timeout retired authoritative endpoint metadata"
+  [ ! -e "$returned" ] || fail "projection lock timeout returned the authoritative recovery worktree"
+  assert_contains "$(cat "$state/projection-timeout.meta")" "abort_cleanup=failed" \
+    "projection lock timeout did not mark retained endpoint metadata"
+  assert_contains "$(cat "$state/projection-timeout.meta")" "worktree=$worktree" \
+    "projection lock timeout did not preserve the authoritative recovery worktree identity"
+  pass "fm-spawn: projection lock timeout preserves authoritative metadata and worktree"
 }
 
 test_projection_reclaim_refusal_matrix_is_non_mutating() {
@@ -1591,6 +1755,79 @@ test_list_live_scoped_to_this_homes_workspace_only() {
 }
 
 # --- target parsing, key normalization ---------------------------------------
+
+test_handoff_process_matches_kimi_linux_argv() {
+  local json
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":67,"name":"python3","argv0":"python3","argv":["python3","/opt/kimi/bin/kimi","--auto"]}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches kimi "$1"' _ "$json" \
+    || fail "Kimi handoff did not recognize a Linux argv/argv0 process shape"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":67,"name":"python3","argv":[67]}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches kimi "$1"' _ "$json"; then
+    fail "Kimi handoff accepted malformed non-string argv evidence"
+  fi
+  pass "fm_backend_herdr_handoff_process_matches: Linux argv/argv0 supports Kimi without accepting malformed evidence"
+}
+
+test_handoff_process_matches_raw_executable_only() {
+  local json
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":71,"name":"zsh","cmdline":"-zsh"}]}}}'
+  if SHELL=/bin/bash ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json"; then
+    fail "raw handoff accepted a different pane shell merely because it differed from caller SHELL"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":72,"name":"python3","argv0":"/opt/custom-agent","argv":["/opt/custom-agent","--flag"]}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json" \
+    || fail "raw handoff rejected structurally verified requested-executable argv evidence"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":73,"name":"python3","argv0":"python3","argv":["python3",71,"custom-agent"]}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "custom-agent --flag" "$1"' _ "$json"; then
+    fail "raw handoff accepted malformed argv evidence that merely mentioned the requested executable"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":74,"name":"node","cmdline":"node /opt/codex --flag","argv0":"node","argv":["node","/opt/codex","--flag"]}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "codex-helper --flag" "$1"' _ "$json"; then
+    fail "prefixed raw executable inherited the built-in Codex process matcher"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":75,"name":"codex-helper","cmdline":"/opt/codex-helper --flag"}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "codex-helper --flag" "$1"' _ "$json" \
+    || fail "prefixed raw executable did not use structural requested-executable evidence"
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_agent_matches_harness codex-helper codex'; then
+    fail "prefixed raw executable inherited the built-in Codex native identity"
+  fi
+  pass "Herdr raw handoff requires exact requested-executable evidence for prefixed names"
+}
+
+test_handoff_process_matches_effective_prefixed_raw_executable() {
+  local json harness
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":76,"name":"custom-agent","argv0":"/opt/custom-agent","argv":["/opt/custom-agent","--flag"],"cmdline":"/opt/custom-agent --flag"}]}}}'
+  for harness in \
+    "env FOO=bar custom-agent --flag" \
+    "exec custom-agent --flag" \
+    "command custom-agent --flag" \
+    "FOO=bar exec env BAR=baz custom-agent --flag"; do
+    ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "$1" "$2"' _ "$harness" "$json" \
+      || fail "raw handoff rejected effective executable for prefix form: $harness"
+  done
+  for harness in \
+    "env custom-agent --flag" \
+    "env FOO=bar" \
+    "exec command custom-agent" \
+    "command exec custom-agent" \
+    "env FOO=bar command custom-agent" \
+    "env FOO=bar 'custom-agent'"; do
+    if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "$1" "$2"' _ "$harness" "$json"; then
+      fail "raw handoff accepted malformed or ambiguous prefix form: $harness"
+    fi
+  done
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":79,"name":"sh","argv0":"/bin/sh","argv":["/bin/sh","-c","echo ok"],"cmdline":"/bin/sh -c echo ok"}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "sh -c '"'"'echo ok'"'"'" "$1"' _ "$json" \
+    || fail "raw handoff rejected a direct executable with quoted arguments"
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":77,"name":"node","argv0":"node","argv":["node","/opt/codex"],"cmdline":"node /opt/codex"}]}}}'
+  if ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "env FOO=bar codex" "$1"' _ "$json"; then
+    fail "raw env prefix granted built-in Codex wrapper identity"
+  fi
+  json='{"result":{"process_info":{"foreground_processes":[{"pid":78,"name":"codex","argv0":"/opt/codex","argv":["/opt/codex"],"cmdline":"/opt/codex"}]}}}'
+  ROOT="$ROOT" bash -c '. "$ROOT/bin/backends/herdr.sh"; fm_backend_herdr_handoff_process_matches "env FOO=bar codex" "$1"' _ "$json" \
+    || fail "raw env prefix rejected exact structural Codex executable evidence"
+  pass "Herdr raw handoff derives only unambiguous prefixed executables without built-in identity"
+}
 
 test_parse_target() {
   ( . "$ROOT/bin/backends/herdr.sh"
@@ -3002,6 +3239,9 @@ test_create_task_refuses_when_preexisting_husk_tab_remains
 test_create_task_refuses_when_agent_state_ambiguous
 test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
+test_create_task_closes_and_verifies_tab_when_pane_id_is_missing
+test_create_task_preserves_tab_id_when_partial_cleanup_is_unverified
+test_create_task_treats_malformed_tab_entries_as_unverified_cleanup
 test_create_task_creates_with_no_focus_flag
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
@@ -3029,13 +3269,18 @@ test_presentation_lock_malformed_socket_falls_back
 test_projection_order_rejects_malformed_socket
 test_presentation_lock_insecure_namespace_falls_back
 test_spawn_task_lock_covers_all_backend_creation_and_metadata_publication
-test_projected_spawn_disarms_cleanup_before_ambiguous_launch_submission
+test_projected_spawn_holds_lock_through_witnessed_handoff
+test_presentation_lock_serializes_focus_order_through_handoff
 test_projected_abort_cleanup_holds_presentation_lock
+test_projected_abort_lock_timeout_preserves_endpoint_metadata
 test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
+test_handoff_process_matches_kimi_linux_argv
+test_handoff_process_matches_raw_executable_only
+test_handoff_process_matches_effective_prefixed_raw_executable
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read

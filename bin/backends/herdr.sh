@@ -90,6 +90,10 @@ FM_BACKEND_HERDR_MIN_EVENTS_PROTOCOL=16
 # presentation path uses one narrowly whitelisted raw-socket request after
 # verifying the exact method and parameter schema.
 FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL=16
+FM_BACKEND_HERDR_READY_POLLS=${FM_BACKEND_HERDR_READY_POLLS:-100}
+FM_BACKEND_HERDR_READY_STABLE_POLLS=${FM_BACKEND_HERDR_READY_STABLE_POLLS:-20}
+FM_BACKEND_HERDR_READY_POLL_SLEEP=${FM_BACKEND_HERDR_READY_POLL_SLEEP:-0.1}
+FM_BACKEND_HERDR_HANDOFF_POLLS=${FM_BACKEND_HERDR_HANDOFF_POLLS:-200}
 # Per-pane escalation dedupe marker prefix, under the state dir. One marker per
 # window (keyed like the watcher's own .stale-<key>): set when a ->blocked edge
 # is enqueued, cleared on any working edge, so exactly one wake fires per
@@ -1133,9 +1137,65 @@ fm_backend_herdr_agent_alive() {  # <target>
 # fm_backend_herdr_workspace_prune_seeded_default_tab for the incident and
 # the safety argument). An ADOPTED workspace's caller always passes an empty
 # 4th arg, so this function never even queries for a prune candidate in that
-# case. Echoes "<tab_id> <pane_id>" on success.
+# case.
+#
+# Terminal readiness is deliberately NOT inferred here from elapsed time.
+# fm-spawn calls fm_backend_herdr_wait_shell_ready after this function returns,
+# once before first pane input and again after treehouse enters its own shell.
+# Echoes "<tab_id> <pane_id>" on success.
+# Close one tab that this create attempt just returned, then prove its exact id
+# is absent from the owning workspace. A close error is tolerated only when the
+# authoritative follow-up list still proves absence.
+fm_backend_herdr_close_created_tab_exact() {  # <session> <workspace-id> <tab-id>
+  local session=$1 wsid=$2 tab_id=$3 list
+  fm_backend_herdr_cli "$session" tab close "$tab_id" >/dev/null 2>&1 || true
+  list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || {
+    echo "error: could not verify cleanup of newly created herdr tab $tab_id in workspace $wsid (session $session)" >&2
+    return 1
+  }
+  if ! printf '%s' "$list" | jq -e '
+    (.result.tabs | type) == "array"
+    and all(.result.tabs[]?; type == "object" and (.tab_id | type) == "string" and (.tab_id | length) > 0)
+  ' >/dev/null 2>&1; then
+    echo "error: could not parse cleanup verification for newly created herdr tab $tab_id in workspace $wsid (session $session)" >&2
+    return 1
+  fi
+  if printf '%s' "$list" | jq -e --arg tab "$tab_id" '.result.tabs[] | select(.tab_id == $tab)' >/dev/null 2>&1; then
+    echo "error: newly created herdr tab $tab_id remains after cleanup in workspace $wsid (session $session)" >&2
+    return 1
+  fi
+  return 0
+}
+
+fm_backend_herdr_close_created_pane_exact() {  # <session> <pane-id>
+  local session=$1 pane_id=$2 pane_state
+  fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+  pane_state=$(fm_backend_herdr_pane_agent_state "$session" "$pane_id")
+  if [ "$pane_state" != dead ]; then
+    echo "error: could not prove newly created herdr pane $pane_id absent after cleanup (state=$pane_state; session $session)" >&2
+    return 1
+  fi
+  return 0
+}
+
+fm_backend_herdr_cleanup_failed_create() {  # <session> <workspace-id>
+  local session=$1 wsid=$2
+  if [ -n "$FM_BACKEND_HERDR_CREATE_TAB_ID" ]; then
+    fm_backend_herdr_close_created_tab_exact \
+      "$session" "$wsid" "$FM_BACKEND_HERDR_CREATE_TAB_ID" || return 1
+  elif [ -n "$FM_BACKEND_HERDR_CREATE_PANE_ID" ]; then
+    fm_backend_herdr_close_created_pane_exact \
+      "$session" "$FM_BACKEND_HERDR_CREATE_PANE_ID" || return 1
+  fi
+  FM_BACKEND_HERDR_CREATE_TAB_ID=
+  FM_BACKEND_HERDR_CREATE_PANE_ID=
+  return 0
+}
+
 fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_tab_id>
   local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
+  FM_BACKEND_HERDR_CREATE_TAB_ID=
+  FM_BACKEND_HERDR_CREATE_PANE_ID=
   session=${container%%:*}
   wsid=${container#*:}
   list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 1
@@ -1160,7 +1220,10 @@ EOF
   out=$(fm_backend_herdr_cli "$session" tab create --workspace "$wsid" --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
   tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  FM_BACKEND_HERDR_CREATE_TAB_ID=$tab_id
+  FM_BACKEND_HERDR_CREATE_PANE_ID=$pane_id
   if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+    fm_backend_herdr_cleanup_failed_create "$session" "$wsid" || true
     echo "error: could not parse tab/pane id from herdr tab create output" >&2
     return 1
   fi
@@ -1173,10 +1236,12 @@ EOF
 $dup_tab_ids
 EOF
     list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || {
+      fm_backend_herdr_cleanup_failed_create "$session" "$wsid" || true
       echo "error: could not verify herdr husk removal for tab '$label' in workspace $wsid (session $session)" >&2
       return 1
     }
     if ! printf '%s' "$list" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1; then
+      fm_backend_herdr_cleanup_failed_create "$session" "$wsid" || true
       echo "error: could not parse herdr tab list output for workspace $wsid (session $session)" >&2
       return 1
     fi
@@ -1184,10 +1249,13 @@ EOF
       '.result.tabs[]? | select(.label == $want and .tab_id != $replacement) | .tab_id' 2>/dev/null)
     remaining_dup_tabs=${remaining_dup_tabs//$'\n'/ }
     if [ -n "$remaining_dup_tabs" ]; then
+      fm_backend_herdr_cleanup_failed_create "$session" "$wsid" || true
       echo "error: failed to remove preexisting herdr tab(s) $remaining_dup_tabs for label '$label' in workspace $wsid (session $session)" >&2
       return 1
     fi
   fi
+  FM_BACKEND_HERDR_CREATE_TAB_ID=$tab_id
+  FM_BACKEND_HERDR_CREATE_PANE_ID=$pane_id
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
@@ -1673,6 +1741,257 @@ fm_backend_herdr_current_path() {  # <target>
   fm_backend_herdr_target_ready "$1" || return 0
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
     | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
+}
+
+fm_backend_herdr_physical_path_or_raw() {  # <path>
+  local path=$1 real
+  if real=$(cd "$path" 2>/dev/null && pwd -P); then
+    printf '%s\n' "$real"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+fm_backend_herdr_new_token() {  # <purpose>
+  local purpose=${1:-ready}
+  printf '__fm_%s_%s_%s_%s__' "$purpose" "$$" "$RANDOM" "$(date +%s)"
+}
+
+fm_backend_herdr_wait_shell_ready() {  # <target> <expected-cwd> [boundary]
+  local target=$1 expected=$2 boundary=${3:-shell} polls stable_needed sleep_s session pane
+  local i out row pid name cwd observed_real signature previous_signature="" stable=0
+  local token command cap expected_cksum
+  fm_backend_herdr_parse_target "$target" || {
+    echo "error: invalid herdr target '$target' for shell readiness" >&2
+    return 1
+  }
+  session=$FM_BACKEND_HERDR_SESSION
+  pane=$FM_BACKEND_HERDR_PANE
+  expected=$(fm_backend_herdr_physical_path_or_raw "$expected")
+  expected_cksum=$(printf '%s\n' "$expected" | cksum | awk '{print $1}')
+  case "$expected_cksum" in ''|*[!0-9]*) return 1 ;; esac
+  polls=$FM_BACKEND_HERDR_READY_POLLS
+  stable_needed=$FM_BACKEND_HERDR_READY_STABLE_POLLS
+  sleep_s=$FM_BACKEND_HERDR_READY_POLL_SLEEP
+  case "$polls" in ''|*[!0-9]*|0) polls=100 ;; esac
+  case "$stable_needed" in ''|*[!0-9]*|0) stable_needed=20 ;; esac
+
+  for i in $(seq 1 "$polls"); do
+    out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null || true)
+    row=$(printf '%s' "$out" | jq -r '
+      .result.process_info.foreground_processes as $p
+      | if ($p | type) == "array" and ($p | length) == 1
+        then [$p[0].pid // "", $p[0].name // "", $p[0].cwd // ""] | @tsv
+        else empty
+        end
+    ' 2>/dev/null)
+    pid='' name='' cwd=''
+    IFS=$'\t' read -r pid name cwd <<EOF
+$row
+EOF
+    observed_real=$(fm_backend_herdr_physical_path_or_raw "$cwd")
+    if [ -n "$pid" ] && [ -n "$name" ] && [ "$observed_real" = "$expected" ]; then
+      signature="$pid:$name:$observed_real"
+      if [ "$signature" = "$previous_signature" ]; then
+        stable=$((stable + 1))
+      else
+        previous_signature=$signature
+        stable=1
+      fi
+      [ "$stable" -lt "$stable_needed" ] || break
+    else
+      previous_signature=
+      stable=0
+    fi
+    [ "$i" -eq "$polls" ] || sleep "$sleep_s"
+  done
+  if [ "$stable" -lt "$stable_needed" ]; then
+    echo "error: herdr shell in pane $pane did not become stable at $expected" >&2
+    return 1
+  fi
+
+  token=$(fm_backend_herdr_new_token "ready_$boundary")
+  command="printf '%s\\n' '$token'; pwd -P | cksum | awk '{print \$1}'"
+  if ! fm_backend_herdr_cli "$session" pane run "$pane" "$command" >/dev/null 2>&1; then
+    echo "error: herdr shell readiness canary could not be sent to pane $pane" >&2
+    return 1
+  fi
+  for i in $(seq 1 "$polls"); do
+    cap=$(fm_backend_herdr_cli "$session" pane read "$pane" --source recent --lines 200 2>/dev/null || true)
+    if printf '%s\n' "$cap" | awk -v token="$token" -v sum="$expected_cksum" '
+      previous == token && $0 == sum { found = 1 }
+      { previous = $0 }
+      END { exit(found ? 0 : 1) }
+    '; then
+      return 0
+    fi
+    [ "$i" -eq "$polls" ] || sleep "$sleep_s"
+  done
+  echo "error: herdr shell in pane $pane accepted readiness text but did not acknowledge execution" >&2
+  return 1
+}
+
+fm_backend_herdr_native_harness_identity() {  # <harness>
+  case "$1" in
+    claude) printf 'claude' ;;
+    codex) printf 'codex' ;;
+    opencode) printf 'opencode' ;;
+    pi|pi-signed) printf 'pi' ;;
+    grok) printf 'grok' ;;
+    kimi) printf 'kimi' ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_backend_herdr_agent_matches_harness() {  # <harness> <native-agent-identity>
+  local harness=$1 agent=$2 expected
+  expected=$(fm_backend_herdr_native_harness_identity "$harness") || return 1
+  [ "$agent" = "$expected" ]
+}
+
+fm_backend_herdr_raw_assignment() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./@%+:,-]*$ ]]
+}
+
+fm_backend_herdr_raw_executable() {
+  local harness=$1 token index=0 count assignment_count=0
+  local -a words
+  case "$harness" in
+    ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
+  read -r -a words <<< "$harness"
+  count=${#words[@]}
+  [ "$count" -gt 0 ] || return 1
+  while [ "$index" -lt "$count" ] \
+        && fm_backend_herdr_raw_assignment "${words[$index]}"; do
+    index=$((index + 1))
+  done
+  if [ "$index" -lt "$count" ]; then
+    case "${words[$index]}" in
+      exec|command) index=$((index + 1)) ;;
+    esac
+  fi
+  [ "$index" -lt "$count" ] || return 1
+  if [ "${words[$index]}" = env ]; then
+    index=$((index + 1))
+    while [ "$index" -lt "$count" ] \
+          && fm_backend_herdr_raw_assignment "${words[$index]}"; do
+      assignment_count=$((assignment_count + 1))
+      index=$((index + 1))
+    done
+    [ "$assignment_count" -gt 0 ] || return 1
+  fi
+  [ "$index" -lt "$count" ] || return 1
+  token=${words[$index]}
+  case "$token" in
+    ''|*=*|exec|command|env|-*|*[!A-Za-z0-9_./@%+:-]*)
+      return 1
+      ;;
+  esac
+  basename "$token"
+}
+
+fm_backend_herdr_handoff_process_matches() {  # <harness> <process-info-json>
+  local harness=$1 out=$2 name cmdline expected native_expected verified=0
+  if native_expected=$(fm_backend_herdr_native_harness_identity "$harness"); then
+    expected=$native_expected
+    verified=1
+  else
+    expected=$(fm_backend_herdr_raw_executable "$harness") || return 1
+  fi
+  if [ "$verified" -eq 0 ]; then
+    printf '%s' "$out" | jq -e --arg expected "$expected" '
+      .result.process_info.foreground_processes[]?
+      | [
+          (if (.name | type) == "string" then .name else empty end),
+          (if (.argv0 | type) == "string" then .argv0 else empty end),
+          (if ((.argv | type) == "array")
+                and (all(.argv[]; type == "string"))
+                and ((.argv | length) > 0)
+            then .argv[0]
+            else empty
+            end),
+          (if (.cmdline | type) == "string"
+            then (.cmdline | split(" ") | map(select(length > 0)) | .[0] // empty)
+            else empty
+            end)
+        ]
+      | map(select(length > 0) | split("/")[-1])
+      | index($expected) != null
+    ' >/dev/null 2>&1
+    return
+  fi
+  while IFS=$'\t' read -r name cmdline; do
+    [ -n "$name" ] || continue
+    case "$expected:$name:$cmdline" in
+      claude:claude:*|claude:node:*claude*) return 0 ;;
+      codex:codex:*|codex:node:*codex*) return 0 ;;
+      opencode:opencode:*|opencode:bun:*opencode*|opencode:node:*opencode*) return 0 ;;
+      pi:pi:*|pi:node:*'/pi '*|pi:node:*'/pi'|pi:node:*' pi '*) return 0 ;;
+      grok:grok:*) return 0 ;;
+      kimi:kimi:*|kimi:python:*kimi*|kimi:python3:*kimi*|kimi:node:*kimi*) return 0 ;;
+    esac
+  done <<EOF
+$(printf '%s' "$out" | jq -r '
+  .result.process_info.foreground_processes[]?
+  | [
+      (if (.cmdline | type) == "string" then .cmdline else empty end),
+      (if (.argv0 | type) == "string" then .argv0 else empty end),
+      (if (.argv | type) == "array" then .argv[] | select(type == "string") else empty end)
+    ] as $command
+  | [.name // "", ($command | join(" "))]
+  | @tsv
+' 2>/dev/null)
+EOF
+  return 1
+}
+
+fm_backend_herdr_wait_launch_handoff() {  # <target> <harness> <witness-token>
+  local target=$1 harness=$2 token=$3 polls sleep_s session pane i cap out agent diagnostic witness=0
+  if diagnostic=$(fm_backend_herdr_native_harness_identity "$harness"); then
+    :
+  elif diagnostic=$(fm_backend_herdr_raw_executable "$harness"); then
+    :
+  else
+    diagnostic='raw-command'
+  fi
+  fm_backend_herdr_parse_target "$target" || {
+    echo "error: invalid herdr target '$target' for launch handoff" >&2
+    return 1
+  }
+  session=$FM_BACKEND_HERDR_SESSION
+  pane=$FM_BACKEND_HERDR_PANE
+  polls=$FM_BACKEND_HERDR_HANDOFF_POLLS
+  sleep_s=$FM_BACKEND_HERDR_READY_POLL_SLEEP
+  case "$polls" in ''|*[!0-9]*|0) polls=200 ;; esac
+
+  for i in $(seq 1 "$polls"); do
+    cap=$(fm_backend_herdr_cli "$session" pane read "$pane" --source recent --lines 200 2>/dev/null || true)
+    if printf '%s\n' "$cap" | grep -qxF "$token"; then
+      witness=1
+    fi
+    if [ "$witness" -eq 1 ]; then
+      out=$(fm_backend_herdr_cli "$session" agent get "$pane" 2>&1 || true)
+      agent=$(printf '%s' "$out" | jq -r '.result.agent.agent // empty' 2>/dev/null)
+      if fm_backend_herdr_agent_matches_harness "$harness" "$agent"; then
+        return 0
+      fi
+      if [ -z "$agent" ] \
+         || ! fm_backend_herdr_native_harness_identity "$harness" >/dev/null; then
+        out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null || true)
+        if fm_backend_herdr_handoff_process_matches "$harness" "$out"; then
+          return 0
+        fi
+      fi
+    fi
+    [ "$i" -eq "$polls" ] || sleep "$sleep_s"
+  done
+  if [ "$witness" -eq 0 ]; then
+    echo "error: herdr launch text in pane $pane was not acknowledged as executed" >&2
+  else
+    echo "error: herdr launch executed in pane $pane but no $diagnostic process or agent handoff appeared" >&2
+  fi
+  return 1
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,

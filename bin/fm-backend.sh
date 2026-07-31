@@ -385,6 +385,8 @@ fm_backend_endpoint_atom_valid() {  # <value>
 
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
+  local abort_stage_count abort_stage cleanup_failure_count empty_worktree_count
+  local projection_count projection
   local session pane recorded_session workspace tab terminal worktree_id surface
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
@@ -400,10 +402,38 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     echo "REFUSED: task $id has a missing, empty, or ambiguous window endpoint; preserving task state." >&2
     return 1
   }
-  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || {
-    echo "REFUSED: task $id has a missing, empty, or ambiguous worktree identity; preserving task state." >&2
-    return 1
-  }
+  abort_stage_count=$(grep -c '^abort_cleanup_stage=' "$meta" 2>/dev/null || true)
+  case "$abort_stage_count" in
+    0) abort_stage= ;;
+    1)
+      abort_stage=$(fm_backend_meta_exact_value "$meta" abort_cleanup_stage) || {
+        echo "REFUSED: task $id has an empty abort-cleanup stage; preserving task state." >&2
+        return 1
+      }
+      ;;
+    *)
+      echo "REFUSED: task $id has an ambiguous abort-cleanup stage; preserving task state." >&2
+      return 1
+      ;;
+  esac
+  case "$abort_stage" in
+    ''|pre-worktree) ;;
+    *)
+      echo "REFUSED: task $id has an unknown abort-cleanup stage; preserving task state." >&2
+      return 1
+      ;;
+  esac
+  if ! worktree=$(fm_backend_meta_exact_value "$meta" worktree); then
+    cleanup_failure_count=$(grep -c '^abort_cleanup=failed$' "$meta" 2>/dev/null || true)
+    empty_worktree_count=$(grep -c '^worktree=$' "$meta" 2>/dev/null || true)
+    if [ "$abort_stage" != pre-worktree ] \
+       || [ "$cleanup_failure_count" -ne 1 ] \
+       || [ "$empty_worktree_count" -ne 1 ]; then
+      echo "REFUSED: task $id has a missing, empty, or ambiguous worktree identity; preserving task state." >&2
+      return 1
+    fi
+    worktree=
+  fi
   project=$(fm_backend_meta_exact_value "$meta" project) || {
     echo "REFUSED: task $id has a missing, empty, or ambiguous project identity; preserving task state." >&2
     return 1
@@ -420,6 +450,25 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   esac
   if [ -z "$backend" ] || ! fm_backend_is_known "$backend"; then
     echo "REFUSED: task $id has a missing, ambiguous, or unknown backend identity; preserving task state." >&2
+    return 1
+  fi
+  projection_count=$(grep -c '^herdr_projection=' "$meta" 2>/dev/null || true)
+  case "$projection_count" in
+    0) projection= ;;
+    1) projection=$(fm_backend_meta_exact_value "$meta" herdr_projection) || projection= ;;
+    *)
+      echo "REFUSED: task $id has an ambiguous Herdr projection marker; preserving task state." >&2
+      return 1
+      ;;
+  esac
+  if [ "$projection_count" -eq 1 ] \
+     && { [ "$projection" != projected ] || [ "$backend" != herdr ]; }; then
+    echo "REFUSED: task $id has a malformed or backend-inconsistent Herdr projection marker; preserving task state." >&2
+    return 1
+  fi
+  if [ "$abort_stage" = pre-worktree ] \
+     && { [ "$backend" != herdr ] || [ -n "$worktree" ]; }; then
+    echo "REFUSED: task $id has an inconsistent pre-worktree abort record; preserving task state." >&2
     return 1
   fi
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
